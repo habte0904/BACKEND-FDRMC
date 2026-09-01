@@ -1,0 +1,179 @@
+{
+  "admin_location": [
+    "location_id",
+    "subcity",
+    "woreda",
+    "block",
+    "house no"
+  ],
+  "community": [
+    "community_id",
+    "location_id",
+    "assessment_date",
+    "assessed_by",
+    "remarks"
+  ],
+  "demographics": [
+    "demo_id",
+    "community_id",
+    "total_population",
+    "male_population",
+    "female_population",
+    "children_0_17",
+    "youth_18_29",
+    "adults_30_59",
+    "elderly_60_plus",
+    "total_households",
+    "Numberof_female_headed _households",
+    "Informal_settlement_population",
+    "Low_income_households",
+    "Unemployment_rate",
+    "Education_level",
+    "Internally_displaced_population _presence",
+    "Column_16",
+    "Column_17",
+    "Column_18",
+    "Column_19",
+    "Column_20",
+    "Column_21"
+  ],
+  "livelihoods": [
+    "livelihood_id",
+    "community_id",
+    "livelihood_type",
+    "households",
+    "percentage"
+  ],
+  "Basic service ": [
+    "service_id",
+    "community_id",
+    "water_source",
+    "electricity",
+    "road_access",
+    "drainage_system_coverage",
+    "solid_waste_management_coverage",
+    "Telecommunications_ access",
+    "critical_lifeline_redundancy"
+  ],
+  "Critical_Facilities ": [
+    "facility_id",
+    "community_id",
+    "facility_type",
+    "distance_to_nearest_emergency_service",
+    "Structural_safety_of _critical _facilities",
+    "Availability_o-emergency_equipment"
+  ],
+  "vulnerable_groups": [
+    "vg_id",
+    "community_id",
+    "group_type",
+    "number"
+  ],
+  "community_capacity": [
+    "capacity_id",
+    "community_id",
+    "capacity_type",
+    "available",
+    "remarks"
+  ],
+  "hazard": [
+    "hazard_id",
+    "hazard_name",
+    "hazard_category"
+  ],
+  "community_hazard": [
+    "ch_id",
+    "community_id",
+    "hazard_id",
+    "frequency",
+    "severity",
+    "seasonality",
+    "historical_events"
+  ],
+  "vulnerability_assessment": [
+    "vuln_id",
+    "community_id",
+    "hazard_id",
+    "element_at_risk",
+    "vulnerability_level",
+    "reasons"
+  ],
+  "housing_indicators": [
+    "housing_id",
+    "community_id",
+    "percent_non_durable_materials",
+    "age_buildings_over_30_years",
+    "compliance_with_building_codes",
+    "housing_density_overcrowding",
+    "informal_housing_coverage",
+    "proximity_to_hazard_zones",
+    "fire_resistant_materials_availability"
+  ],
+  "capacity_assessment": [
+    "cap_assess_id",
+    "community_id",
+    "hazard_id",
+    "capacity_type",
+    "capacity_level",
+    "remarks"
+  ],
+  "economic_risk_indicators": [
+    "economic_id",
+    "community_id",
+    "concentration_small_informal_businesses",
+    "market_exposure",
+    "daily_labor_dependency",
+    "business_interruption_risk",
+    "industrial_hazard_exposure",
+    "insurance_coverage_level"
+  ],
+  "environmental_indicators": [
+    "env_id",
+    "community_id",
+    "green_space_per_capita",
+    "wetland_encroachment",
+    "soil_sealing_coverage",
+    "waste_dumping_sites",
+    "urban_drainage_blockage_frequency",
+    "pollution_hotspots"
+  ],
+  "preparedness_indicators": [
+    "prep_id",
+    "community_id",
+    "emergency_shelters_availability",
+    "evacuation_routes_mapped",
+    "firefighting_equipment_availability",
+    "ambulance_coverage",
+    "emergency_drills_frequency",
+    "community_awareness_level",
+    "stockpiled_emergency_supplies"
+  ],
+  "recovery_indicators": [
+    "rec_id",
+    "community_id",
+    "post_disaster_recovery_plans",
+    "livelihood_diversification",
+    "access_to_credit_safety_nets",
+    "community_self_help_groups",
+    "urban_upgrading_programs",
+    "climate_adaptation_initiatives"
+  ],
+  "risk_index": [
+    "risk_index_id",
+    "community_id",
+    "hazard_index",
+    "vulnerability_index",
+    "exposure_index",
+    "capacity_index",
+    "overall_woreda_risk_score"
+  ],
+  "risk_assessment": [
+    "risk_id",
+    "community_id",
+    "hazard_id",
+    "risk_level",
+    "risk_score",
+    "priority_rank",
+    "recommended_action"
+  ]
+}
