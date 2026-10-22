@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import User from '../models/User.js';
 import Organization from '../models/Organization.js';
 import Department from '../models/Department.js';
@@ -5,18 +6,60 @@ import Team from '../models/Team.js';
 import { getBranchScope, buildSubcityRegex } from '../utils/branchScope.js';
 
 /**
+ * Universal helper to verify if a user has Super Administrator privileges
+ * Checks both accessLevel and roles array safely.
+ */
+export const isSuperAdminUser = (user) => {
+    if (!user) return false;
+    if (user.accessLevel === 'super_admin') return true;
+    if (user.accessLevel === 'manager' && user.organizationType === 'head_office') return true;
+    if (Array.isArray(user.roles)) {
+        return user.roles.some(r => {
+            if (!r) return false;
+            const name = (typeof r === 'string' ? r : r.name || r.title || '').toString().toLowerCase().trim();
+            return ['super admin', 'superadmin', 'super_admin', 'admin'].includes(name);
+        });
+    }
+    return false;
+};
+
+/**
+ * Helper to safely extract string ID from an ObjectId, populated doc, or string
+ */
+export const safeId = (val) => {
+    if (!val) return null;
+    if (typeof val === 'string') return val;
+    if (val._id) return val._id.toString();
+    if (val.id) return val.id.toString();
+    return val.toString();
+};
+
+/**
  * Middleware to apply data scope filtering based on user's hierarchy level
  */
 export const applyScopeFilter = (Model) => {
     return async (req, res, next) => {
         try {
-            const user = await User.findById(req.user._id)
+            // Super Admin check directly on authenticated req.user
+            if (isSuperAdminUser(req.user)) {
+                req.dataScope = {};
+                req.scopedUser = req.user;
+                return next();
+            }
+
+            const currentUserId = safeId(req.user?._id || req.user?.id);
+            if (!currentUserId) {
+                return res.status(401).json({ message: 'Not authenticated' });
+            }
+
+            const user = await User.findById(currentUserId)
                 .populate('organization')
                 .populate('sector')
                 .populate('department')
                 .populate('team')
                 .populate('managedDepartments')
-                .populate('managedTeams');
+                .populate('managedTeams')
+                .populate('roles');
 
             if (!user) {
                 return res.status(404).json({ message: 'User not found' });
@@ -24,8 +67,7 @@ export const applyScopeFilter = (Model) => {
 
             const scope = {};
 
-            const isSuperAdmin = user.accessLevel === 'super_admin' || 
-                                 (user.accessLevel === 'manager' && user.organizationType === 'head_office');
+            const isSuperAdmin = isSuperAdminUser(user);
 
             if (!isSuperAdmin) {
                 // Check if user is a branch user assigned to a territorial branch (subcity branch)
@@ -233,6 +275,11 @@ export const checkDocumentAccess = (Model, idParamName = 'id') => {
                 return res.status(400).json({ message: 'Resource ID parameter is required' });
             }
 
+            // Super Admin bypass immediately
+            if (isSuperAdminUser(req.user)) {
+                return next();
+            }
+
             if (!req.dataScope) {
                 await new Promise((resolve, reject) => {
                     applyScopeFilter(Model)(req, res, (err) => {
@@ -242,11 +289,12 @@ export const checkDocumentAccess = (Model, idParamName = 'id') => {
                 });
             }
 
-            const isSuperAdmin = req.scopedUser.accessLevel === 'super_admin' || 
-                                 (req.scopedUser.accessLevel === 'manager' && req.scopedUser.organizationType === 'head_office');
-
-            if (isSuperAdmin) {
+            if (isSuperAdminUser(req.scopedUser) || isSuperAdminUser(req.user)) {
                 return next();
+            }
+
+            if (!mongoose.Types.ObjectId.isValid(docId)) {
+                return res.status(400).json({ message: 'Invalid resource ID parameter' });
             }
 
             const doc = await Model.findOne({ _id: docId, ...req.dataScope });
@@ -257,6 +305,7 @@ export const checkDocumentAccess = (Model, idParamName = 'id') => {
             req.targetDocument = doc;
             next();
         } catch (error) {
+            console.error('[checkDocumentAccess Error]:', error);
             res.status(500).json({ message: 'Access check failed', error: error.message });
         }
     };
@@ -267,21 +316,25 @@ export const checkDocumentAccess = (Model, idParamName = 'id') => {
  */
 export const canModifyUser = async (req, res, next) => {
     try {
-        const targetUserId = req.params.id || req.params.userId || req.body?.userId;
+        const currentUserId = safeId(req.user?._id || req.user?.id);
+        const targetUserId = safeId(req.params?.id || req.params?.userId || req.body?.userId);
+
         if (!targetUserId) {
             return res.status(400).json({ message: 'User ID is required' });
         }
 
-        if (req.user._id.toString() === targetUserId.toString()) {
+        // 1. Users can always modify their own profile
+        if (currentUserId && currentUserId === targetUserId) {
             return next();
         }
 
-        // Super admin can modify any user
-        const isSuperAdmin = req.user.accessLevel === 'super_admin' ||
-            (req.user.roles && req.user.roles.some(r => ['superadmin', 'super admin', 'super_admin'].includes((r.name || r).toString().toLowerCase())));
-        
-        if (isSuperAdmin) {
+        // 2. Super admins can modify any user
+        if (isSuperAdminUser(req.user)) {
             return next();
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+            return res.status(400).json({ message: 'Invalid target user ID' });
         }
 
         const targetUser = await User.findById(targetUserId);
@@ -302,8 +355,8 @@ export const canModifyUser = async (req, res, next) => {
 
         const getHierarchyValue = (level) => HIERARCHY_LEVELS[level] ?? 0;
 
-        const currentUserLevel = getHierarchyValue(req.user.accessLevel);
-        const targetUserLevel = getHierarchyValue(targetUser.accessLevel);
+        const currentUserLevel = getHierarchyValue(req.user?.accessLevel);
+        const targetUserLevel = getHierarchyValue(targetUser?.accessLevel);
 
         if (currentUserLevel <= targetUserLevel) {
             return res.status(403).json({
@@ -313,6 +366,7 @@ export const canModifyUser = async (req, res, next) => {
 
         next();
     } catch (error) {
+        console.error('[canModifyUser Error]:', error);
         res.status(500).json({ message: 'Hierarchy modification check failed', error: error.message });
     }
 };
@@ -322,7 +376,28 @@ export const canModifyUser = async (req, res, next) => {
  */
 export const canAccessUser = async (req, res, next) => {
     try {
-        const currentUser = await User.findById(req.user._id)
+        const currentUserId = safeId(req.user?._id || req.user?.id);
+        const targetUserId = safeId(req.params?.id || req.params?.userId || req.body?.userId);
+
+        if (!targetUserId) {
+            return res.status(400).json({ message: 'Target user ID required' });
+        }
+
+        // 1. Users can always access their own account
+        if (currentUserId && currentUserId === targetUserId) {
+            return next();
+        }
+
+        // 2. Super admins can view and access ANY user
+        if (isSuperAdminUser(req.user)) {
+            return next();
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+            return res.status(400).json({ message: 'Invalid target user ID' });
+        }
+
+        const currentUser = await User.findById(currentUserId)
             .populate('organization')
             .populate('roles')
             .populate('sector')
@@ -331,10 +406,13 @@ export const canAccessUser = async (req, res, next) => {
             .populate('managedDepartments')
             .populate('managedTeams');
 
-        const targetUserId = req.params.id || req.params.userId || req.body?.userId;
+        if (!currentUser) {
+            return res.status(401).json({ message: 'Current user not found' });
+        }
 
-        if (!targetUserId) {
-            return res.status(400).json({ message: 'Target user ID required' });
+        // Check if DB user is Super Admin
+        if (isSuperAdminUser(currentUser)) {
+            return next();
         }
 
         const targetUser = await User.findById(targetUserId)
@@ -349,20 +427,19 @@ export const canAccessUser = async (req, res, next) => {
         }
 
         // Users can always access their own account
-        if (currentUser._id.equals(targetUser._id)) {
+        if (safeId(currentUser._id) === safeId(targetUser._id)) {
             req.targetUser = targetUser;
             return next();
         }
 
-        // Super admin can access anyone
-        const isSuperAdmin = currentUser.accessLevel === 'super_admin' ||
-            (req.user.roles && req.user.roles.some(r => ['superadmin', 'super admin', 'super_admin'].includes((r.name || r).toString().toLowerCase()))) ||
-            (currentUser.roles && currentUser.roles.some(r => ['superadmin', 'super admin', 'super_admin'].includes((r.name || r).toString().toLowerCase())));
-
-        if (isSuperAdmin) {
-            req.targetUser = targetUser;
-            return next();
-        }
+        const currentUserOrgId = safeId(currentUser.organization);
+        const targetUserOrgId = safeId(targetUser.organization);
+        const currentUserDeptId = safeId(currentUser.department);
+        const targetUserDeptId = safeId(targetUser.department);
+        const currentUserSectorId = safeId(currentUser.sector);
+        const targetUserSectorId = safeId(targetUser.sector);
+        const currentUserTeamId = safeId(currentUser.team);
+        const targetUserTeamId = safeId(targetUser.team);
 
         // Manager can access anyone in their organization
         if (currentUser.accessLevel === 'manager') {
@@ -370,8 +447,7 @@ export const canAccessUser = async (req, res, next) => {
                 req.targetUser = targetUser;
                 return next();
             }
-            if (currentUser.organization && targetUser.organization &&
-                currentUser.organization._id.equals(targetUser.organization._id)) {
+            if (currentUserOrgId && targetUserOrgId && currentUserOrgId === targetUserOrgId) {
                 req.targetUser = targetUser;
                 return next();
             }
@@ -379,8 +455,8 @@ export const canAccessUser = async (req, res, next) => {
 
         // Deputy can access users in managed departments
         if (currentUser.accessLevel === 'deputy') {
-            if (currentUser.managedDepartments && targetUser.department &&
-                currentUser.managedDepartments.some(d => d._id.equals(targetUser.department._id))) {
+            if (currentUser.managedDepartments && targetUserDeptId &&
+                currentUser.managedDepartments.some(d => safeId(d) === targetUserDeptId)) {
                 req.targetUser = targetUser;
                 return next();
             }
@@ -388,8 +464,7 @@ export const canAccessUser = async (req, res, next) => {
 
         // Sector Lead can access users in their sector
         if (currentUser.accessLevel === 'sector_lead') {
-            if (currentUser.sector && targetUser.sector &&
-                currentUser.sector._id.equals(targetUser.sector._id)) {
+            if (currentUserSectorId && targetUserSectorId && currentUserSectorId === targetUserSectorId) {
                 req.targetUser = targetUser;
                 return next();
             }
@@ -397,8 +472,7 @@ export const canAccessUser = async (req, res, next) => {
 
         // Branch admin can access users in their branch
         if (currentUser.accessLevel === 'branch_admin') {
-            if (currentUser.organization && targetUser.organization &&
-                currentUser.organization._id.equals(targetUser.organization._id)) {
+            if (currentUserOrgId && targetUserOrgId && currentUserOrgId === targetUserOrgId) {
                 req.targetUser = targetUser;
                 return next();
             }
@@ -406,14 +480,12 @@ export const canAccessUser = async (req, res, next) => {
 
         // Directorate can access users in their department
         if (currentUser.accessLevel === 'directorate') {
-            if (currentUser.department && targetUser.department &&
-                currentUser.department._id.equals(targetUser.department._id)) {
+            if (currentUserDeptId && targetUserDeptId && currentUserDeptId === targetUserDeptId) {
                 req.targetUser = targetUser;
                 return next();
             }
-            // Also check managed departments
-            if (currentUser.managedDepartments && targetUser.department &&
-                currentUser.managedDepartments.some(d => d._id.equals(targetUser.department._id))) {
+            if (currentUser.managedDepartments && targetUserDeptId &&
+                currentUser.managedDepartments.some(d => safeId(d) === targetUserDeptId)) {
                 req.targetUser = targetUser;
                 return next();
             }
@@ -421,21 +493,19 @@ export const canAccessUser = async (req, res, next) => {
 
         // Team leader can access team members
         if (currentUser.accessLevel === 'team_leader') {
-            if (currentUser.team && targetUser.team &&
-                currentUser.team._id.equals(targetUser.team._id)) {
+            if (currentUserTeamId && targetUserTeamId && currentUserTeamId === targetUserTeamId) {
                 req.targetUser = targetUser;
                 return next();
             }
-            // Also check managed teams
-            if (currentUser.managedTeams && targetUser.team &&
-                currentUser.managedTeams.some(t => t._id.equals(targetUser.team._id))) {
+            if (currentUser.managedTeams && targetUserTeamId &&
+                currentUser.managedTeams.some(t => safeId(t) === targetUserTeamId)) {
                 req.targetUser = targetUser;
                 return next();
             }
         }
 
         // Expert can only access themselves
-        if (currentUser._id.equals(targetUser._id)) {
+        if (safeId(currentUser._id) === safeId(targetUser._id)) {
             req.targetUser = targetUser;
             return next();
         }
@@ -446,6 +516,7 @@ export const canAccessUser = async (req, res, next) => {
             targetLevel: targetUser.accessLevel
         });
     } catch (error) {
+        console.error('[canAccessUser Error]:', error);
         res.status(500).json({ message: 'Access check failed', error: error.message });
     }
 };
@@ -454,10 +525,10 @@ export const canAccessUser = async (req, res, next) => {
  * Get accessible organizations for current user
  */
 export const getAccessibleOrganizations = async (userId) => {
-    const user = await User.findById(userId).populate('organization');
+    const user = await User.findById(userId).populate('organization').populate('roles');
+    if (!user) return [];
 
-    if (user.accessLevel === 'super_admin' ||
-        (user.accessLevel === 'manager' && user.organizationType === 'head_office')) {
+    if (isSuperAdminUser(user)) {
         return await Organization.find({ status: 'active' });
     }
 
@@ -475,15 +546,21 @@ export const getAccessibleDepartments = async (userId) => {
     const user = await User.findById(userId)
         .populate('organization')
         .populate('department')
-        .populate('managedDepartments');
+        .populate('managedDepartments')
+        .populate('roles');
 
-    if (user.accessLevel === 'super_admin' ||
-        (user.accessLevel === 'manager' && user.organizationType === 'head_office')) {
+    if (!user) return [];
+
+    if (isSuperAdminUser(user)) {
         return await Department.find({});
     }
 
+    const userOrgId = safeId(user.organization);
+
     if (user.accessLevel === 'manager' || user.accessLevel === 'branch_admin') {
-        return await Department.find({ organizationId: user.organization._id });
+        if (userOrgId) {
+            return await Department.find({ organizationId: userOrgId });
+        }
     }
 
     if (user.accessLevel === 'deputy' || user.accessLevel === 'directorate') {

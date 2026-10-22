@@ -2,6 +2,7 @@ import * as userService from '../services/userService.js';
 import * as auditService from '../services/auditService.js';
 import { validateUser, transformUserInput, formatUserResponse } from '../dto/userDTO.js';
 import { sendVerificationEmail, sendAccountSetupEmail } from '../services/emailService.js';
+import { isSuperAdminUser } from '../middleware/dataScope.js';
 import bcrypt from 'bcryptjs';
 
 // Create User
@@ -30,8 +31,7 @@ export const createUser = async (req, res) => {
         const isBranchAdmin = req.user.accessLevel === 'branch_admin' ||
             (req.user.roles && req.user.roles.some(r => ['Branch Admin', 'branch_admin'].includes(r.name)));
 
-        const isSuperAdmin = req.user.accessLevel === 'super_admin' ||
-            (req.user.roles && req.user.roles.some(r => ['Super Admin', 'super_admin', 'superadmin'].includes(r.name)));
+        const isSuperAdmin = isSuperAdminUser(req.user);
 
         if (isBranchAdmin && !isSuperAdmin) {
             const userOrgId = req.user.organization?._id || req.user.organization;
@@ -147,8 +147,7 @@ export const updateUser = async (req, res) => {
         const isBranchAdmin = req.user.accessLevel === 'branch_admin' ||
             (req.user.roles && req.user.roles.some(r => ['Branch Admin', 'branch_admin'].includes(r.name)));
 
-        const isSuperAdmin = req.user.accessLevel === 'super_admin' ||
-            (req.user.roles && req.user.roles.some(r => ['Super Admin', 'super_admin', 'superadmin'].includes(r.name)));
+        const isSuperAdmin = isSuperAdminUser(req.user);
 
         // If the user is self-updating their profile and not a Super Admin,
         // strictly prevent modifying subcity, woreda/kebele, roles, and organization

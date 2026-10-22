@@ -1,5 +1,6 @@
 import RolePermission from '../models/RolePermission.js';
 import Permission from '../models/Permission.js';
+import { isSuperAdminUser } from './dataScope.js';
 
 /**
  * Middleware to check if user has required permission
@@ -21,17 +22,14 @@ export const checkPermission = (resource, action) => {
             const hasReportManagerAccess = resource.toLowerCase() === 'incidentreport' &&
                 action === 'update' &&
                 (reportManagerLevels.includes(req.user.accessLevel) ||
-                    req.user.roles?.some((role) => reportManagerRoles.includes((role.name || '').toString().toLowerCase())));
+                    req.user.roles?.some((role) => reportManagerRoles.includes(((role && role.name) || role || '').toString().toLowerCase())));
 
             if (hasReportManagerAccess) {
                 return next();
             }
 
             // Super admins have all permissions
-            const isSuperAdmin = req.user.accessLevel === 'super_admin' ||
-                req.user.roles?.some(r => ['superadmin', 'super admin', 'super_admin'].includes(r.name.toLowerCase()));
-
-            if (isSuperAdmin) {
+            if (isSuperAdminUser(req.user)) {
                 return next();
             }
 
@@ -84,7 +82,7 @@ export const checkAnyPermission = (permissions) => {
             }
 
             // Super admins have all permissions
-            if (req.user.accessLevel === 'super_admin') {
+            if (isSuperAdminUser(req.user)) {
                 return next();
             }
 
