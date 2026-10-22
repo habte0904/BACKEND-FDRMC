@@ -26,6 +26,8 @@ const sanitizeIncomingPayload = (payload) => {
   return clean;
 };
 
+const REPORT_STATUSES = ['new', 'submitted', 'received', 'dispatched', 'not_solved', 'solved', 'closed', 'archived'];
+
 const generateReportCode = () => {
   return String(Math.floor(1000 + Math.random() * 9000));
 };
@@ -33,8 +35,7 @@ const generateReportCode = () => {
 const normalizeStatus = (incoming) => {
   if (!incoming) return undefined;
   const s = String(incoming).toLowerCase().trim();
-  const allowed = ['new', 'submitted', 'received', 'dispatched', 'not_solved', 'solved', 'closed', 'archived'];
-  if (allowed.includes(s)) return s;
+  if (REPORT_STATUSES.includes(s)) return s;
   if (s === 'not solved') return 'not_solved';
   return undefined;
 };
@@ -92,12 +93,12 @@ export const createIncidentReportPublic = async (req, res) => {
     });
 
     await auditService.logAction({
-        userId: req.user?._id || 'PUBLIC_USER',
-        action: 'INCIDENT_REPORT_CREATE',
-        resource: 'IncidentReport',
-        resourceId: doc._id,
-        after: doc,
-        ip: req.ip
+      userId: req.user?._id || 'PUBLIC_USER',
+      action: 'INCIDENT_REPORT_CREATE',
+      resource: 'IncidentReport',
+      resourceId: doc._id,
+      after: doc,
+      ip: req.ip
     });
 
     // Real-time Live Dashboard & Header Notification Socket Event Emission
@@ -106,10 +107,19 @@ export const createIncidentReportPublic = async (req, res) => {
       _id: doc._id,
       reportCode: doc.reportCode,
       reportType: doc.reportType,
-      category: doc.category || doc.concernCategory || 'Public Report',
+      category: doc.category || 'Public Report',
+      concernCategory: doc.concernCategory || '',
       severity: doc.severity || 'moderate',
       details: doc.details || doc.concernDetails || '',
-      location: doc.location || {},
+      location: {
+        addressLine: doc.location?.addressLine || '',
+        city: doc.location?.city || '',
+        region: doc.location?.region || '',
+        subCity: doc.location?.subCity || doc.location?.subcity || '',
+        subcity: doc.location?.subcity || doc.location?.subCity || '',
+        woreda: doc.location?.woreda || '',
+        placeName: doc.location?.placeName || '',
+      },
       status: doc.status,
       isRead: false,
       createdAt: doc.createdAt,
@@ -181,23 +191,26 @@ export const listIncidentReports = async (req, res) => {
 export const getUnreadPublicReports = async (req, res) => {
   try {
     const scopeQuery = req.dataScope || {};
-    
-    // Count total unread reports (either isRead: false OR status: 'new' or 'submitted')
-    const unreadCount = await IncidentReport.countDocuments({
-      ...scopeQuery,
-      $or: [{ isRead: false }, { isRead: { $exists: false } }, { status: 'new' }, { status: 'submitted' }],
-    });
+    const unreadCondition = {
+      $or: [{ isRead: false }, { isRead: { $exists: false } }],
+    };
 
-    // Fetch latest 20 reports for the dropdown
+    // Combine scopeQuery with unreadCondition using $and to avoid overwriting scopeQuery.$or
+    const countQuery =
+      scopeQuery && Object.keys(scopeQuery).length > 0
+        ? { $and: [scopeQuery, unreadCondition] }
+        : unreadCondition;
+
+    // Count truly unread reports — branch scoping is applied by applyScopeFilter middleware
+    const unreadCount = await IncidentReport.countDocuments(countQuery);
+
+    // Fetch latest 30 reports for the dropdown (branch-scoped)
     const reports = await IncidentReport.find(scopeQuery)
       .sort({ createdAt: -1 })
-      .limit(20)
+      .limit(30)
       .lean();
 
-    res.json({
-      unreadCount,
-      reports,
-    });
+    res.json({ unreadCount, reports });
   } catch (error) {
     console.error('getUnreadPublicReports error:', error);
     res.status(500).json({ message: error.message });
@@ -233,11 +246,17 @@ export const markReportAsRead = async (req, res) => {
 export const markAllReportsAsRead = async (req, res) => {
   try {
     const scopeQuery = req.dataScope || {};
+    const unreadCondition = {
+      $or: [{ isRead: false }, { isRead: { $exists: false } }],
+    };
+
+    const updateQuery =
+      scopeQuery && Object.keys(scopeQuery).length > 0
+        ? { $and: [scopeQuery, unreadCondition] }
+        : unreadCondition;
+
     await IncidentReport.updateMany(
-      {
-        ...scopeQuery,
-        $or: [{ isRead: false }, { isRead: { $exists: false } }],
-      },
+      updateQuery,
       {
         $set: {
           isRead: true,
@@ -260,7 +279,7 @@ export const getIncidentReportById = async (req, res) => {
   try {
     const doc = await IncidentReport.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ message: 'Report not found' });
-    
+
     // Auto mark as read when viewed
     if (!doc.isRead) {
       await IncidentReport.findByIdAndUpdate(req.params.id, {
@@ -284,8 +303,9 @@ export const updateIncidentReport = async (req, res) => {
     const beforeDoc = await IncidentReport.findById(req.params.id);
     if (!beforeDoc) return res.status(404).json({ message: 'Report not found' });
     const before = beforeDoc.toObject();
+    delete payload.reportType;
     // Determine if requester is admin/superuser
-    const isAdmin = req.user && (req.user.accessLevel === 'super_admin' || (req.user.roles && req.user.roles.some(r => ['superadmin','super admin','super_admin','admin','administrator','branch_admin','manager'].includes((r.name || '').toString().toLowerCase()))));
+    const isAdmin = req.user && (['super_admin', 'manager', 'branch_admin'].includes(req.user.accessLevel) || (req.user.roles && req.user.roles.some(r => ['superadmin', 'super admin', 'super_admin', 'admin', 'administrator', 'branch_admin', 'manager'].includes((r.name || '').toString().toLowerCase()))));
 
     // Prevent non-admins from changing protected fields
     if (!isAdmin) {
@@ -297,29 +317,30 @@ export const updateIncidentReport = async (req, res) => {
       delete payload.responsibleInstitution;
       delete payload.assignedTo;
     } else if (payload.status) {
-      const statuses = ['new', 'submitted', 'received', 'dispatched', 'not_solved', 'solved', 'closed'];
-      if (before.status !== 'archived' && payload.status !== 'archived') {
-        const currentIndex = statuses.indexOf(before.status || 'new');
-        const newIndex = statuses.indexOf(payload.status);
-        if (currentIndex !== -1 && newIndex !== -1 && newIndex < currentIndex) {
-          return res.status(400).json({ message: 'Status cannot be reverted to a previous state.' });
-        }
+      const normalizedStatus = normalizeStatus(payload.status);
+      if (!normalizedStatus) {
+        return res.status(400).json({ message: 'Invalid status value' });
       }
+      payload.status = normalizedStatus;
     }
     const doc = await IncidentReport.findByIdAndUpdate(
       req.params.id,
       { $set: payload },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
+    if (!doc) {
+      return res.status(404).json({ message: 'Report not found' });
+    }
+
     await auditService.logAction({
-        userId: req.user?._id,
-        action: 'INCIDENT_REPORT_UPDATE',
-        resource: 'IncidentReport',
-        resourceId: doc._id,
-        before,
-        after: doc,
-        ip: req.ip
+      userId: req.user?._id,
+      action: 'INCIDENT_REPORT_UPDATE',
+      resource: 'IncidentReport',
+      resourceId: doc._id,
+      before,
+      after: doc,
+      ip: req.ip
     });
 
     // Real-time Live Dashboard Socket Event Emission
@@ -328,6 +349,9 @@ export const updateIncidentReport = async (req, res) => {
     res.json(doc);
   } catch (error) {
     console.error('updateIncidentReport error:', error);
+    if (error?.name === 'ValidationError') {
+      return res.status(400).json({ message: 'Validation failed', errors: Object.values(error.errors || {}).map((err) => err.message) });
+    }
     res.status(500).json({ message: error.message });
   }
 };

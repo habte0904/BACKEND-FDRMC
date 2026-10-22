@@ -3,12 +3,24 @@ import Site from '../models/Site.js';
 import Template from '../models/Template.js';
 import FormResponse from '../models/FormResponse.js';
 import SurveySyncLog from '../models/SurveySyncLog.js';
+import { getBranchScope } from '../utils/branchScope.js';
 
 // Get assigned sites for the logged-in surveyor
 export const getAssignedSites = async (req, res) => {
     try {
         const userId = req.user._id || req.user.id;
-        let sites = await Site.find({ assignedSurveyor: userId }).populate('assignedTemplate');
+        const branchScope = await getBranchScope(req.user);
+
+        let query = { assignedSurveyor: userId };
+        if (branchScope.isBranch && branchScope.subcityName) {
+            query.$or = [
+                { 'location.address': { $regex: branchScope.subcityName, $options: 'i' } },
+                { name: { $regex: branchScope.subcityName, $options: 'i' } },
+                { description: { $regex: branchScope.subcityName, $options: 'i' } }
+            ];
+        }
+
+        let sites = await Site.find(query).populate('assignedTemplate');
 
         // Seed default assigned sites for the user if none exist yet for testing/demonstration
         if (sites.length === 0) {
@@ -16,41 +28,27 @@ export const getAssignedSites = async (req, res) => {
             const templateToAssign = templates.length > 0 ? templates[0]._id : null;
 
             if (templateToAssign) {
+                const subName = (branchScope.isBranch && branchScope.subcityName) ? branchScope.subcityName : 'Addis Ababa';
                 const seedSites = [
                     {
-                        siteCode: `SITE-ADD-${Math.floor(1000 + Math.random() * 9000)}`,
-                        name: 'Bole Subcity Site Survey #1',
-                        description: 'Disaster risk and infrastructure assessment site',
+                        siteCode: `SITE-${subName.slice(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                        name: `${subName} Site Survey #1`,
+                        description: `Disaster risk and infrastructure assessment site in ${subName}`,
                         region: 'Addis Ababa',
-                        zone: 'Zone 1',
-                        woreda: 'Woreda 03',
-                        kebele: 'Kebele 05',
-                        location: { latitude: 8.9806, longitude: 38.7578, address: 'Bole, Addis Ababa' },
+                        zone: `${subName} Zone`,
+                        woreda: 'Woreda 01',
+                        kebele: 'Kebele 01',
+                        location: { latitude: 9.0200, longitude: 38.7800, address: `${subName}, Addis Ababa` },
                         assignedSurveyor: userId,
                         assignedTemplate: templateToAssign,
                         status: 'Assigned',
                         priority: 'High',
                         dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-                    },
-                    {
-                        siteCode: `SITE-AKL-${Math.floor(1000 + Math.random() * 9000)}`,
-                        name: 'Akaki Kality Facility Assessment',
-                        description: 'Emergency response facility survey',
-                        region: 'Addis Ababa',
-                        zone: 'Zone 2',
-                        woreda: 'Woreda 08',
-                        kebele: 'Kebele 12',
-                        location: { latitude: 8.8950, longitude: 38.7833, address: 'Akaki Kality, Addis Ababa' },
-                        assignedSurveyor: userId,
-                        assignedTemplate: templateToAssign,
-                        status: 'Assigned',
-                        priority: 'Medium',
-                        dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
                     }
                 ];
 
                 await Site.insertMany(seedSites);
-                sites = await Site.find({ assignedSurveyor: userId }).populate('assignedTemplate');
+                sites = await Site.find(query).populate('assignedTemplate');
             }
         }
 

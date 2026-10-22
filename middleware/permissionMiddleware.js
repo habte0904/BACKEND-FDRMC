@@ -14,28 +14,41 @@ export const checkPermission = (resource, action) => {
                 return res.status(401).json({ message: 'Not authenticated' });
             }
 
+            // Report managers may update report statuses; document scope is
+            // still enforced by checkDocumentAccess on the report route.
+            const reportManagerLevels = ['super_admin', 'manager', 'branch_admin'];
+            const reportManagerRoles = ['superadmin', 'super admin', 'super_admin', 'admin', 'administrator', 'branch_admin', 'manager'];
+            const hasReportManagerAccess = resource.toLowerCase() === 'incidentreport' &&
+                action === 'update' &&
+                (reportManagerLevels.includes(req.user.accessLevel) ||
+                    req.user.roles?.some((role) => reportManagerRoles.includes((role.name || '').toString().toLowerCase())));
+
+            if (hasReportManagerAccess) {
+                return next();
+            }
+
             // Super admins have all permissions
-            const isSuperAdmin = req.user.accessLevel === 'super_admin' || 
-                               req.user.roles?.some(r => ['superadmin', 'super admin', 'super_admin'].includes(r.name.toLowerCase()));
-            
+            const isSuperAdmin = req.user.accessLevel === 'super_admin' ||
+                req.user.roles?.some(r => ['superadmin', 'super admin', 'super_admin'].includes(r.name.toLowerCase()));
+
             if (isSuperAdmin) {
                 return next();
             }
 
             // Get user's role IDs
             const roleIds = req.user.roles?.map(role => role._id) || [];
-            
+
             if (roleIds.length === 0) {
                 return res.status(403).json({ message: 'No roles assigned to user' });
             }
 
             // Find the permission
             const permission = await Permission.findOne({ resource, action });
-            
+
             if (!permission) {
                 // If permission doesn't exist in the system, deny access
-                return res.status(403).json({ 
-                    message: `Permission not found for ${action} on ${resource}` 
+                return res.status(403).json({
+                    message: `Permission not found for ${action} on ${resource}`
                 });
             }
 
@@ -46,8 +59,8 @@ export const checkPermission = (resource, action) => {
             });
 
             if (!hasPermission) {
-                return res.status(403).json({ 
-                    message: `You don't have permission to ${action} ${resource}` 
+                return res.status(403).json({
+                    message: `You don't have permission to ${action} ${resource}`
                 });
             }
 
@@ -76,18 +89,18 @@ export const checkAnyPermission = (permissions) => {
             }
 
             const roleIds = req.user.roles?.map(role => role._id) || [];
-            
+
             if (roleIds.length === 0) {
                 return res.status(403).json({ message: 'No roles assigned to user' });
             }
 
             // Check each permission
             for (const perm of permissions) {
-                const permission = await Permission.findOne({ 
-                    resource: perm.resource, 
-                    action: perm.action 
+                const permission = await Permission.findOne({
+                    resource: perm.resource,
+                    action: perm.action
                 });
-                
+
                 if (permission) {
                     const hasPermission = await RolePermission.findOne({
                         roleId: { $in: roleIds },
@@ -100,8 +113,8 @@ export const checkAnyPermission = (permissions) => {
                 }
             }
 
-            res.status(403).json({ 
-                message: 'You don\'t have the required permissions' 
+            res.status(403).json({
+                message: 'You don\'t have the required permissions'
             });
         } catch (error) {
             console.error('Permission check error:', error);

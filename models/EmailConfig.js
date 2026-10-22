@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 
 const EmailConfigSchema = new mongoose.Schema(
   {
+    // NOTE: user and pass are loaded from .env (EMAIL_USER / EMAIL_PASS or EMAIL_SMTP_USER / EMAIL_SMTP_PASS).
+    // They are intentionally NOT stored in plain text in MongoDB for security reasons.
+    isEncrypted: {
+      type: Boolean,
+      default: false, // true once record has been saved with AES-256-GCM encryption enabled
+    },
     service: {
       type: String,
       default: 'Gmail', // 'Gmail', 'Custom', 'Office365', 'SendGrid', 'SES'
@@ -9,7 +15,7 @@ const EmailConfigSchema = new mongoose.Schema(
     host: {
       type: String,
       trim: true,
-      default: 'smtp.gmail.com',
+      default: null, // stored encrypted if modified; falls back to process.env.EMAIL_SMTP_HOST
     },
     port: {
       type: Number,
@@ -23,17 +29,17 @@ const EmailConfigSchema = new mongoose.Schema(
       type: String,
       default: 'login', // 'login', 'oauth2'
     },
+    // Sensitive credentials: fall back to .env (EMAIL_USER / EMAIL_PASS)
+    // Stored strictly encrypted (AES-256-GCM) if overridden by admin. NEVER stored in plain text!
     user: {
       type: String,
-      required: true,
       trim: true,
-      default: 'petrosh122@gmail.com',
+      default: null,
     },
     pass: {
       type: String,
-      required: true,
       trim: true,
-      default: 'yyfq thbc kcno dddo',
+      default: null,
     },
     fromName: {
       type: String,
@@ -43,12 +49,17 @@ const EmailConfigSchema = new mongoose.Schema(
     fromEmail: {
       type: String,
       trim: true,
-      default: 'petrosh122@gmail.com',
+      default: null, // falls back to user or .env
     },
     replyTo: {
       type: String,
       trim: true,
       default: '',
+    },
+    // Throughput & Rate Limiting (Emails per second)
+    maxTps: {
+      type: Number,
+      default: 5, // 5 emails per second to comply with SMTP provider sending limits
     },
     enableOtp: {
       type: Boolean,
@@ -57,6 +68,16 @@ const EmailConfigSchema = new mongoose.Schema(
     enableAlertBroadcast: {
       type: Boolean,
       default: true,
+    },
+    // Email validation policy
+    emailValidationMode: {
+      type: String,
+      enum: ['strict', 'restricted_domains'],
+      default: 'strict',
+    },
+    allowedDomains: {
+      type: String,
+      default: '',
     },
     isActive: {
       type: Boolean,

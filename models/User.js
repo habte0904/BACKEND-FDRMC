@@ -6,11 +6,15 @@ const userSchema = new mongoose.Schema({
   phone: { type: String, unique: true, sparse: true },
   passwordHash: String,
   profileImage: String, // Path to profile image
+  googleId: { type: String, sparse: true },
+  authProvider: { type: String, enum: ['local', 'google'], default: 'local' },
   status: { type: String, default: 'pending' }, // pending | active | suspended
   roles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Role' }],
   organization: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization' },
   sector: { type: mongoose.Schema.Types.ObjectId, ref: 'Sector' },
   department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+  subcity: String,
+  kebele: String,
   verificationCode: String,
   verificationExpires: Date,
 

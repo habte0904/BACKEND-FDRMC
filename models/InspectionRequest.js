@@ -4,6 +4,8 @@ const inspectionRequestSchema = new mongoose.Schema(
   {
     trackingNumber: { type: String, required: true, unique: true, index: true },
     propertyAddress: { type: String, required: true, trim: true },
+    subcity: { type: String, trim: true, default: '' },
+    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', default: null },
     inspectionType: {
       type: String,
       required: true,

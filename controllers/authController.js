@@ -7,10 +7,13 @@ import dotenv from 'dotenv';
 import * as userService from '../services/userService.js';
 import * as emailService from '../services/emailService.js';
 import * as auditService from '../services/auditService.js';
+import { OAuth2Client } from 'google-auth-library';
 import { validateRegister, validateLogin, transformRegisterInput, transformLoginInput } from '../dto/authDTO.js';
 import { formatUserResponse } from '../dto/userDTO.js';
 
 dotenv.config();
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // Register user
 export const register = async (req, res) => {
@@ -152,51 +155,100 @@ export const verifyAccount = async (req, res) => {
     }
 };
 
-// Google OAuth Login / Register
+// Google OAuth 2.0 Login / Register with Cryptographic Token Verification
 export const googleAuth = async (req, res) => {
     try {
-        const { credential, email, fullname, profileImage } = req.body;
+        const { credential, accessToken } = req.body;
 
-        let userEmail = email;
-        let userName = fullname;
-        let userPicture = profileImage;
+        if (!credential && !accessToken) {
+            return res.status(400).json({ 
+                message: 'Google authentication requires a valid Google credential ID token or access token.' 
+            });
+        }
 
-        // If a Google JWT credential (id_token) is supplied, decode or verify it
+        let googlePayload = null;
+
+        // 1. Verify Google ID Token if provided
         if (credential) {
             try {
-                // Decode Google JWT payload safely
-                const parts = credential.split('.');
-                if (parts.length === 3) {
-                    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-                    if (payload && payload.email) {
-                        userEmail = payload.email;
-                        userName = payload.name || userName;
-                        userPicture = payload.picture || userPicture;
-                    }
+                const clientId = process.env.GOOGLE_CLIENT_ID;
+                const verifyOptions = {
+                    idToken: credential
+                };
+                
+                // If a real client ID is configured (not placeholder), enforce audience check
+                if (clientId && !clientId.includes('your_google_client_id')) {
+                    verifyOptions.audience = clientId;
                 }
-            } catch (err) {
-                console.error("Error decoding Google credential:", err);
+
+                const ticket = await googleClient.verifyIdToken(verifyOptions);
+                googlePayload = ticket.getPayload();
+            } catch (verifyErr) {
+                console.warn("Google verifyIdToken failed, checking token directly:", verifyErr.message);
+                
+                // Fallback: verify with Google's tokeninfo API endpoint
+                try {
+                    const tokenInfoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+                    if (tokenInfoRes.ok) {
+                        googlePayload = await tokenInfoRes.json();
+                    }
+                } catch (fallbackErr) {
+                    console.error("Google tokeninfo fallback failed:", fallbackErr);
+                }
             }
         }
 
-        if (!userEmail) {
-            return res.status(400).json({ message: 'Valid Google email is required' });
+        // 2. Fetch User Profile if Access Token was provided
+        if (!googlePayload && accessToken) {
+            try {
+                const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                    headers: { Authorization: `Bearer ${accessToken}` }
+                });
+                if (userInfoRes.ok) {
+                    googlePayload = await userInfoRes.json();
+                }
+            } catch (tokenErr) {
+                console.error("Google userinfo fetch failed:", tokenErr);
+            }
         }
 
-        userEmail = userEmail.trim().toLowerCase();
+        if (!googlePayload || !googlePayload.email) {
+            return res.status(401).json({ 
+                message: 'Google authentication failed. Invalid or unverified Google token.' 
+            });
+        }
 
-        // Check if user exists
-        let user = await User.findOne({ email: userEmail });
+        // Verify that Google confirmed the email address
+        if (googlePayload.email_verified === false || googlePayload.email_verified === 'false') {
+            return res.status(403).json({ 
+                message: 'Your Google email is not verified by Google. Please verify your Google account first.' 
+            });
+        }
+
+        const userEmail = googlePayload.email.trim().toLowerCase();
+        const userName = googlePayload.name || googlePayload.given_name || userEmail.split('@')[0];
+        const userPicture = googlePayload.picture || undefined;
+        const googleSub = googlePayload.sub;
+
+        // Check if user exists by email or googleId
+        let user = await User.findOne({ 
+            $or: [
+                { email: userEmail },
+                { googleId: googleSub }
+            ]
+        });
 
         if (!user) {
-            // Register new Google user as pending (requiring email verification)
+            // Register new Google-authenticated user as active (Google has already verified email & 2FA)
             const defaultPassword = process.env.DEFAULT_PASSWORD || '123456';
             const userData = {
-                fullname: userName || userEmail.split('@')[0],
+                fullname: userName,
                 email: userEmail,
-                profileImage: userPicture || undefined,
+                profileImage: userPicture,
+                googleId: googleSub,
+                authProvider: 'google',
                 password: defaultPassword,
-                status: 'pending',
+                status: 'active',
                 accessLevel: 'public',
                 onboarding: {
                     welcomeShown: true,
@@ -206,59 +258,38 @@ export const googleAuth = async (req, res) => {
 
             user = await userService.createUser(userData);
 
-            // Generate 6-digit verification code
-            const code = Math.floor(100000 + Math.random() * 900000).toString();
-            await Verification.create({
-                userId: user._id,
-                type: 'email',
-                code,
-                expiresAt: new Date(Date.now() + 15 * 60 * 1000)
-            });
-
-            // Send Verification Email
-            await emailService.sendVerificationEmail(user.email, code);
-
             await auditService.logAction({
                 userId: user._id,
-                action: 'USER_GOOGLE_REGISTER_PENDING',
+                action: 'USER_GOOGLE_REGISTER',
                 resource: 'User',
                 ip: req.ip,
-                after: { email: user.email, fullname: user.fullname }
+                after: { email: user.email, fullname: user.fullname, authProvider: 'google' }
             });
-
-            return res.status(200).json({
-                requiresVerification: true,
-                email: user.email,
-                message: 'Account created. Verification code sent to your email.'
-            });
+        } else {
+            // Link Google ID and update profile if needed
+            let needsSave = false;
+            if (!user.googleId) {
+                user.googleId = googleSub;
+                needsSave = true;
+            }
+            if (!user.profileImage && userPicture) {
+                user.profileImage = userPicture;
+                needsSave = true;
+            }
+            if (user.status !== 'active') {
+                user.status = 'active'; // Google verified account
+                needsSave = true;
+            }
+            if (needsSave) {
+                await user.save();
+            }
         }
 
-        // If user existed but is not active, send verification code
-        if (user.status !== 'active') {
-            const code = Math.floor(100000 + Math.random() * 900000).toString();
-            await Verification.findOneAndUpdate(
-                { userId: user._id, type: 'email' },
-                {
-                    code,
-                    expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-                    $inc: { attempts: 1 }
-                },
-                { upsert: true, new: true }
-            );
-
-            await emailService.sendVerificationEmail(user.email, code);
-
-            return res.status(200).json({
-                requiresVerification: true,
-                email: user.email,
-                message: 'Account not verified. A verification code has been sent to your email.'
-            });
-        }
-
-        // User is active, log in
+        // Update login timestamp
         user.lastLogin = new Date();
         await user.save();
 
+        // Sign application JWT session token
         const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
             expiresIn: '1h'
         });

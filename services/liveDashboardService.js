@@ -12,29 +12,48 @@ import WoredaAssessment from '../models/WoredaAssessment.js';
  * Build dynamic filters based on scope and query parameters
  */
 const buildFilters = (scope = {}, filters = {}) => {
-  const incidentMatch = { ...scope };
-  const woredaMatch = { ...scope };
-  const surveyMatch = { ...scope };
+  // If scope has $or (branch scope injection), start with $and to preserve it
+  const hasScopeOr = Array.isArray(scope.$or) && scope.$or.length > 0;
+
+  // For incident reports: branch scope uses location.subCity or location.subcity
+  // For woreda/household: branch scope uses location.subcity
+  const incidentBaseScope = hasScopeOr ? { $or: scope.$or } : {};
+  const woredaBaseScope = hasScopeOr
+    ? { $or: scope.$or.map(c => {
+        // Re-map subCity condition to subcity for woreda models
+        if (c['location.subCity']) return { 'location.subcity': c['location.subCity'] };
+        return c;
+      })
+    }
+    : {};
+
+  const incidentMatch = { ...incidentBaseScope };
+  const woredaMatch = { ...woredaBaseScope };
+  const surveyMatch = {};
+
+  const andConditions = [];
+  const woredaAndConditions = [];
 
   if (filters.hazard) {
-    incidentMatch.category = new RegExp(filters.hazard, 'i');
+    andConditions.push({ category: new RegExp(filters.hazard, 'i') });
   }
   if (filters.severity) {
-    incidentMatch.severity = filters.severity.toLowerCase();
+    andConditions.push({ severity: filters.severity.toLowerCase() });
   }
   if (filters.status) {
-    incidentMatch.status = filters.status.toLowerCase();
+    andConditions.push({ status: filters.status.toLowerCase() });
   }
   if (filters.woreda) {
     const woredaRegex = new RegExp(filters.woreda, 'i');
-    incidentMatch['location.city'] = woredaRegex;
-    incidentMatch['location.addressLine'] = woredaRegex;
-    woredaMatch['location.woreda'] = woredaRegex;
+    andConditions.push({ $or: [{ 'location.city': woredaRegex }, { 'location.addressLine': woredaRegex }] });
+    woredaAndConditions.push({ 'location.woreda': woredaRegex });
   }
   if (filters.subcity || filters.zone || filters.region) {
-    const reg = new RegExp(filters.region || filters.subcity || filters.zone, 'i');
-    incidentMatch['location.region'] = reg;
-    woredaMatch['location.subcity'] = reg;
+    const subcityVal = filters.subcity || filters.zone || filters.region;
+    const reg = new RegExp(subcityVal, 'i');
+    // For incident reports, match both casing variants of the field
+    andConditions.push({ $or: [{ 'location.subCity': reg }, { 'location.region': reg }] });
+    woredaAndConditions.push({ 'location.subcity': reg });
   }
 
   // Date range filtering
@@ -60,9 +79,26 @@ const buildFilters = (scope = {}, filters = {}) => {
         dateRange.$lte = endD;
       }
     }
-    
-    incidentMatch.createdAt = dateRange;
+    andConditions.push({ createdAt: dateRange });
     surveyMatch.$or = [{ submittedAt: dateRange }, { createdAt: dateRange }];
+  }
+
+  // Merge additional conditions into matches
+  if (andConditions.length > 0) {
+    if (incidentMatch.$or) {
+      Object.assign(incidentMatch, { $and: [{ $or: incidentMatch.$or }, ...andConditions] });
+      delete incidentMatch.$or;
+    } else {
+      andConditions.forEach(c => Object.assign(incidentMatch, c));
+    }
+  }
+  if (woredaAndConditions.length > 0) {
+    if (woredaMatch.$or) {
+      Object.assign(woredaMatch, { $and: [{ $or: woredaMatch.$or }, ...woredaAndConditions] });
+      delete woredaMatch.$or;
+    } else {
+      woredaAndConditions.forEach(c => Object.assign(woredaMatch, c));
+    }
   }
 
   return { incidentMatch, woredaMatch, surveyMatch };
@@ -431,13 +467,16 @@ export const getSurveyMonitoringData = async (scope = {}, queryFilters = {}) => 
  * Get live activity feed stream
  */
 export const getActivityFeedData = async (scope = {}, queryFilters = {}) => {
+  // Build incident filter to respect branch scope
+  const { incidentMatch } = buildFilters(scope, queryFilters);
+
   const [logs, incidents, surveys] = await Promise.all([
     AuditLog.find()
       .sort({ timestamp: -1 })
       .limit(10)
       .populate('userId', 'fullname email')
       .lean(),
-    IncidentReport.find()
+    IncidentReport.find(incidentMatch)
       .sort({ createdAt: -1 })
       .limit(10)
       .lean(),

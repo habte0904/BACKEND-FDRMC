@@ -21,6 +21,32 @@ import ReportTemplate from '../models/ReportTemplate.js';
 import Permission from '../models/Permission.js';
 import Role from '../models/Role.js';
 import RolePermission from '../models/RolePermission.js';
+import { getBranchScope } from '../utils/branchScope.js';
+
+/**
+ * Resolve a branch scope extra filter for a given source.
+ * Returns an object to $and into the built mongo filter, or null if unrestricted.
+ */
+const resolveBranchFilter = async (user, sourceKey) => {
+  const branchScope = await getBranchScope(user);
+  if (!branchScope.isBranch || !branchScope.subcityName) return null;
+
+  const regex = new RegExp(`^${branchScope.subcityName.trim()}$`, 'i');
+
+  // Territorial sources — filter by location subcity
+  const territorialSources = ['incident_reports', 'household_profiles', 'woreda_assessments'];
+  if (territorialSources.includes(sourceKey)) {
+    if (sourceKey === 'incident_reports') {
+      // IncidentReport uses location.subCity
+      return { $or: [{ 'location.subCity': regex }, { 'location.subcity': regex }] };
+    }
+    // HouseholdProfile and WoredaAssessment use location.subcity
+    return { 'location.subcity': regex };
+  }
+
+  return null; // non-territorial sources: no branch restriction
+};
+
 
 // ─── Source Registry ───────────────────────────────────────────────────────────
 // Defines every available data source, its model, filterable fields,
@@ -59,6 +85,7 @@ const SOURCE_REGISTRY = {
       { key: 'status',     label: 'Status',      type: 'enum',     options: ['new','submitted','received','dispatched','not_solved','solved','closed','archived'] },
       { key: 'severity',   label: 'Severity',    type: 'enum',     options: ['low','moderate','high','critical'] },
       { key: 'category',   label: 'Category',    type: 'string' },
+      { key: 'location.subCity', label: 'Sub-City', type: 'string' },
       { key: 'location.woreda', label: 'Woreda', type: 'string' },
       { key: 'anonymous',  label: 'Anonymous',   type: 'boolean' },
       { key: 'isRead',     label: 'Is Read',     type: 'boolean' },
@@ -415,7 +442,16 @@ export const executeQuery = async (req, res) => {
     }
 
     const Model = sourceConfig.model;
-    const mongoFilter = buildMongoFilter(filters, sourceConfig);
+    let mongoFilter = buildMongoFilter(filters, sourceConfig);
+
+    // Inject branch scope restriction for territorial sources
+    const branchFilter = await resolveBranchFilter(req.user, source);
+    if (branchFilter) {
+      mongoFilter = Object.keys(mongoFilter).length > 0
+        ? { $and: [branchFilter, mongoFilter] }
+        : branchFilter;
+    }
+
     const selectedFields = fields.length > 0 ? fields : sourceConfig.defaultFields;
     const projection = buildProjection(selectedFields);
     const skip = (Math.max(1, page) - 1) * Math.min(limit, 1000);
@@ -480,7 +516,16 @@ export const exportQuery = async (req, res) => {
     }
 
     const Model = sourceConfig.model;
-    const mongoFilter = buildMongoFilter(filters, sourceConfig);
+    let mongoFilter = buildMongoFilter(filters, sourceConfig);
+
+    // Inject branch scope restriction
+    const branchFilter = await resolveBranchFilter(req.user, source);
+    if (branchFilter) {
+      mongoFilter = Object.keys(mongoFilter).length > 0
+        ? { $and: [branchFilter, mongoFilter] }
+        : branchFilter;
+    }
+
     const selectedFields = fields.length > 0 ? fields : sourceConfig.defaultFields;
     const projection = buildProjection(selectedFields);
     const sortDir = sortOrder === 'asc' ? 1 : -1;
@@ -550,7 +595,16 @@ export const executeMultiQuery = async (req, res) => {
       }
 
       const Model = sourceConfig.model;
-      const mongoFilter = buildMongoFilter(filters, sourceConfig);
+      let mongoFilter = buildMongoFilter(filters, sourceConfig);
+
+      // Inject branch scope
+      const branchFilter = await resolveBranchFilter(req.user, source);
+      if (branchFilter) {
+        mongoFilter = Object.keys(mongoFilter).length > 0
+          ? { $and: [branchFilter, mongoFilter] }
+          : branchFilter;
+      }
+
       const selectedFields = fields.length > 0 ? fields : sourceConfig.defaultFields;
       const projection = buildProjection(selectedFields);
       const sortDir = sortOrder === 'asc' ? 1 : -1;
@@ -629,7 +683,16 @@ export const exportMultiQuery = async (req, res) => {
       if (!sourceConfig) return { sourceKey: source, sourceLabel: source, data: [], fields: [] };
 
       const Model = sourceConfig.model;
-      const mongoFilter = buildMongoFilter(filters, sourceConfig);
+      let mongoFilter = buildMongoFilter(filters, sourceConfig);
+
+      // Inject branch scope
+      const branchFilter = await resolveBranchFilter(req.user, source);
+      if (branchFilter) {
+        mongoFilter = Object.keys(mongoFilter).length > 0
+          ? { $and: [branchFilter, mongoFilter] }
+          : branchFilter;
+      }
+
       const selectedFields = fields.length > 0 ? fields : sourceConfig.defaultFields;
       const projection = buildProjection(selectedFields);
       const sortDir = sortOrder === 'asc' ? 1 : -1;

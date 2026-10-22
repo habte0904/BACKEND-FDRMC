@@ -1,10 +1,18 @@
 import WoredaAssessment from '../models/WoredaAssessment.js';
+import { getBranchScope, checkBranchPermission } from '../utils/branchScope.js';
 
 export const getWoredaAssessments = async (req, res) => {
     try {
         const { subcity, woreda, house_no, block } = req.query;
         const query = { ...(req.dataScope || {}) };
-        if (subcity) query['location.subcity'] = new RegExp(`^${subcity}$`, 'i');
+
+        const branchScope = await getBranchScope(req.user);
+        if (branchScope.isBranch && branchScope.subcityName) {
+            query['location.subcity'] = new RegExp(`^${branchScope.subcityName.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}$`, 'i');
+        } else if (subcity) {
+            query['location.subcity'] = new RegExp(`^${subcity.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}$`, 'i');
+        }
+
         if (woreda) query['location.woreda'] = new RegExp(`^${woreda}$`, 'i');
         if (block) query['location.block'] = new RegExp(`^${block}$`, 'i');
         if (house_no) query['location.house_no'] = new RegExp(`^${house_no}$`, 'i');
@@ -71,6 +79,13 @@ export const createWoredaAssessment = async (req, res) => {
         const { allowUpdateIfDuplicate, ...bodyData } = req.body;
         const houseNo = bodyData.location?.house_no;
         const woreda = bodyData.location?.woreda;
+        const targetSubcity = bodyData.location?.subcity;
+
+        // Branch permission check
+        const permCheck = await checkBranchPermission(req.user, targetSubcity);
+        if (!permCheck.allowed) {
+            return res.status(403).json({ message: permCheck.message });
+        }
 
         const isUnnumbered = !houseNo || !houseNo.trim() || ['none', 'n/a', 'no house no', 'no house number', 'unnumbered'].includes(houseNo.trim().toLowerCase());
 
@@ -115,6 +130,15 @@ export const createWoredaAssessment = async (req, res) => {
 
 export const updateWoredaAssessment = async (req, res) => {
     try {
+        // Branch permission check using existing doc's subcity
+        const existing = await WoredaAssessment.findById(req.params.id);
+        if (existing) {
+            const permCheck = await checkBranchPermission(req.user, existing.location?.subcity);
+            if (!permCheck.allowed) {
+                return res.status(403).json({ message: permCheck.message });
+            }
+        }
+
         const assessment = await WoredaAssessment.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
         if (!assessment) return res.status(404).json({ message: 'Assessment not found' });
         res.json(assessment);
@@ -125,6 +149,15 @@ export const updateWoredaAssessment = async (req, res) => {
 
 export const deleteWoredaAssessment = async (req, res) => {
     try {
+        // Branch permission check using existing doc's subcity
+        const existing = await WoredaAssessment.findById(req.params.id);
+        if (existing) {
+            const permCheck = await checkBranchPermission(req.user, existing.location?.subcity);
+            if (!permCheck.allowed) {
+                return res.status(403).json({ message: permCheck.message });
+            }
+        }
+
         const assessment = await WoredaAssessment.findByIdAndDelete(req.params.id);
         if (!assessment) return res.status(404).json({ message: 'Assessment not found' });
         res.json({ message: 'Assessment deleted' });

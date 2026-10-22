@@ -1,7 +1,6 @@
+import 'dotenv/config';
 import express from 'express';
-// Trigger nodemon restart
 import http from 'http';
-import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -51,31 +50,106 @@ import { getActiveEmailConfig } from './services/emailService.js';
 import { errorHandler } from './middleware/errorMiddleware.js';
 import { initSocket } from './services/socketService.js';
 
-dotenv.config();
 connectDB().then(() => {
     seedDefaultLocations();
     seedDefaultHelpArticles();
     seedReportBuilderPermissions();
     getActiveSmsConfig();
     getActiveEmailConfig();
+}).catch(err => {
+    console.error('[Startup DB/Seed Error]:', err);
 });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-// app.use(cors());
-// for external access
-app.use(cors({
-    origin: true,
-    credentials: true
-}));
+
+// ==========================================
+// CORS Origins Isolation Configuration
+// ==========================================
+const rawAllowedOrigins = [
+    'https://idrmis.gov.et',
+    'https://www.idrmis.gov.et',
+    'https://addisfire.gov.et',
+    process.env.CLIENT_URL,
+    process.env.FRONTEND_URL,
+    ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : [])
+].filter(Boolean);
+
+// Enable localhost and local network testing during development
+if (process.env.NODE_ENV !== 'production') {
+    rawAllowedOrigins.push(
+        'http://localhost:5173',
+        'http://localhost:3000',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:3000',
+        'http://localhost:5000',
+        'http://127.0.0.1:5000'
+    );
+}
+
+export const allowedOrigins = [...new Set(rawAllowedOrigins.map(o => o.replace(/\/+$/, '')))];
+
+export const corsOptions = {
+    origin: (origin, callback) => {
+        // Allow requests with no origin (e.g. mobile apps, server-to-server, curl, Postman)
+        if (!origin) return callback(null, true);
+
+        const normalizedOrigin = origin.replace(/\/+$/, '');
+
+        // Allow localhost and private local network ranges in development
+        if (process.env.NODE_ENV !== 'production') {
+            if (
+                normalizedOrigin.startsWith('http://localhost') ||
+                normalizedOrigin.startsWith('http://127.0.0.1') ||
+                normalizedOrigin.startsWith('http://192.168.') ||
+                normalizedOrigin.startsWith('http://10.')
+            ) {
+                return callback(null, true);
+            }
+        }
+
+        const isAllowed = allowedOrigins.some(allowed => {
+            if (!allowed) return false;
+            if (allowed === '*') return true;
+            return allowed.toLowerCase() === normalizedOrigin.toLowerCase();
+        });
+
+        if (isAllowed) {
+            return callback(null, true);
+        } else {
+            console.warn(`[CORS Blocked] Origin not allowed: ${origin}`);
+            // Return false instead of an Error so Express does not crash or generate a 500 error response
+            return callback(null, false);
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Requested-With',
+        'Accept',
+        'Origin',
+        'Cache-Control',
+        'Pragma',
+        'X-Custom-Header'
+    ],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
+    maxAge: 86400
+};
+
+app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Request logging middleware
 const logFile = fs.createWriteStream('server_logs.txt', { flags: 'a' });
+logFile.on('error', (err) => {
+    console.error('[server_logs write error]:', err.message);
+});
 
 
 
@@ -238,7 +312,15 @@ const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
 initSocket(server);
 
-server.listen(PORT, "0.0.0.0", () => {
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`[Server Error] Port ${PORT} is already in use. Please terminate existing process or pick a different PORT.`);
+    } else {
+        console.error('[Server Error]:', err);
+    }
+});
+
+server.listen(PORT, () => {
     console.log(`Server running on port ${PORT} (Express + Socket.IO)`);
 });
 

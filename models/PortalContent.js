@@ -86,6 +86,7 @@ const PortalContentSchema = new mongoose.Schema(
       title: { type: String, trim: true, default: '' },
       description: { type: String, trim: true, default: '' },
       badge: { type: String, trim: true, default: '' },
+      image: { type: String, trim: true, default: '' },
       items: {
         type: [
           new mongoose.Schema(
@@ -208,6 +209,8 @@ const PortalContentSchema = new mongoose.Schema(
     pages: {
       feedback: {
         title: { type: String, trim: true, default: '' },
+        heroTitle: { type: String, trim: true, default: '' },
+        heroAccent: { type: String, trim: true, default: '' },
         subtitle: { type: String, trim: true, default: '' },
         templateSearch: { type: String, trim: true, default: '' },
         heroImage: { type: String, trim: true, default: '' },

@@ -1,4 +1,9 @@
 import User from '../models/User.js';
+import Role from '../models/Role.js';
+import Organization from '../models/Organization.js';
+import Sector from '../models/Sector.js';
+import Department from '../models/Department.js';
+import Team from '../models/Team.js';
 import bcrypt from 'bcryptjs';
 
 export const createUser = async (data) => {
@@ -43,6 +48,13 @@ export const getUserById = async (id) => {
 };
 
 export const updateUserById = async (id, data) => {
+  // Clean phone to prevent sparse unique index collisions on empty string
+  if (data.phone === '' || (typeof data.phone === 'string' && data.phone.trim() === '')) {
+    data.phone = null;
+  } else if (typeof data.phone === 'string') {
+    data.phone = data.phone.trim();
+  }
+
   // If password is being updated, hash it
   if (data.password) {
     const salt = await bcrypt.genSalt(10);

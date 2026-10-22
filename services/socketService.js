@@ -7,14 +7,59 @@ dotenv.config();
 
 let io = null;
 
+const rawSocketOrigins = [
+  'https://idrmis.gov.et',
+  'https://www.idrmis.gov.et',
+  'https://addisfire.gov.et',
+  process.env.CLIENT_URL,
+  process.env.FRONTEND_URL,
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : [])
+].filter(Boolean);
+
+if (process.env.NODE_ENV !== 'production') {
+  rawSocketOrigins.push(
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000',
+    'http://localhost:5000',
+    'http://127.0.0.1:5000'
+  );
+}
+
+const socketAllowedOrigins = [...new Set(rawSocketOrigins.map(o => o.replace(/\/+$/, '')))];
+
 /**
  * Initialize Socket.IO with HTTP Server
- * @param {import('http').Server} server 
+ * @param {any} server 
  */
 export const initSocket = (server) => {
   io = new Server(server, {
     cors: {
-      origin: true,
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        const normalized = origin.replace(/\/+$/, '');
+        if (process.env.NODE_ENV !== 'production') {
+          if (
+            normalized.startsWith('http://localhost') ||
+            normalized.startsWith('http://127.0.0.1') ||
+            normalized.startsWith('http://192.168.') ||
+            normalized.startsWith('http://10.')
+          ) {
+            return callback(null, true);
+          }
+        }
+        const isAllowed = socketAllowedOrigins.some(allowed => {
+          if (!allowed) return false;
+          if (allowed === '*') return true;
+          return allowed.toLowerCase() === normalized.toLowerCase();
+        });
+        if (isAllowed) {
+          return callback(null, true);
+        }
+        console.warn(`[Socket.IO CORS Blocked] Origin: ${origin}`);
+        return callback(null, false);
+      },
       credentials: true,
     },
     path: '/socket.io',
@@ -101,3 +146,5 @@ export const emitDashboardEvent = (event, data, room = 'global:dashboard') => {
     console.error(`Error emitting socket event ${event}:`, error.message);
   }
 };
+
+export default initSocket;

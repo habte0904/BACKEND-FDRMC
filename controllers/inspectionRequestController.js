@@ -114,12 +114,12 @@ export const trackInspectionRequest = async (req, res) => {
 export const listInspectionRequests = async (req, res) => {
   try {
     const { search, status, inspectionType } = req.query;
-    const query = {};
+    const query = { ...(req.dataScope || {}) };
 
     if (status) query.status = status;
     if (inspectionType) query.inspectionType = inspectionType;
     if (search) {
-      query.$or = [
+      const searchOr = [
         { trackingNumber: { $regex: search, $options: 'i' } },
         { propertyAddress: { $regex: search, $options: 'i' } },
         { requesterName: { $regex: search, $options: 'i' } },
@@ -127,6 +127,12 @@ export const listInspectionRequests = async (req, res) => {
         { requesterEmail: { $regex: search, $options: 'i' } },
         { assignedInspector: { $regex: search, $options: 'i' } },
       ];
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: searchOr }];
+        delete query.$or;
+      } else {
+        query.$or = searchOr;
+      }
     }
 
     const requests = await InspectionRequest.find(query).sort({ createdAt: -1 });

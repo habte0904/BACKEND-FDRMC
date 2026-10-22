@@ -60,7 +60,7 @@ const runMigration = async () => {
         console.log('📝 Step 1: Auto-generating permissions from models...');
         const models = getAllModels();
         // resources to seed
-        const customResources = ['dashboard', 'livedashboard', 'report', 'analytics', 'audit_log', 'sitesurvey'];
+        const customResources = ['dashboard', 'livedashboard', 'report', 'analytics', 'audit_log', 'sitesurvey', 'concernreport'];
         const allResources = [...new Set([...models.map(m => m.toLowerCase()), ...customResources])];
 
         const actions = ['create', 'view', 'update', 'delete', 'import', 'sync', 'submit', 'approve', 'reject', 'publish', 'archive', 'pin', 'react', 'comment', 'share', 'moderate'];

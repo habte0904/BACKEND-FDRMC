@@ -7,6 +7,7 @@ import * as MappingService from '../services/MappingService.js';
 import * as AggregationService from '../services/SpatialAggregationService.js';
 import * as auditService from '../services/auditService.js';
 import * as XLSX from 'xlsx';
+import { getBranchScope, checkBranchPermission } from '../utils/branchScope.js';
 
 const normalizeLevel = (level) => {
     if (level === 'all' || level === 'city') return 'city';
@@ -570,7 +571,13 @@ export const getWoredaProfiles = async (req, res) => {
             return new RegExp(`^${clean}`, 'i');
         };
 
-        if (subcity) query['location.subcity'] = { $regex: new RegExp(`^${subcity.replace(/\bsub[\s-]?city\b/ig, '').trim()}`, 'i') };
+        const branchScope = await getBranchScope(req.user);
+        if (branchScope.isBranch && branchScope.subcityName) {
+            const branchSubcityRegex = new RegExp(`^${branchScope.subcityName.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}$`, 'i');
+            query['location.subcity'] = branchSubcityRegex;
+        } else if (subcity) {
+            query['location.subcity'] = { $regex: new RegExp(`^${subcity.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}`, 'i') };
+        }
         if (woreda) query['location.woreda'] = { $regex: buildFlexRegex(woreda, 'woreda') };
         if (block) query['location.block'] = { $regex: buildFlexRegex(block, 'block') };
 
@@ -598,8 +605,13 @@ export const getWoredaProfiles = async (req, res) => {
             const householdProfiles = [...householdProfilesFromHP, ...householdProfilesFromWP];
 
             // Get direct woreda assessments from WoredaAssessment collection
-            let woredaQuery = {};
-            if (subcity) woredaQuery['location.subcity'] = { $regex: new RegExp(`^${subcity.replace(/\bsub[\s-]?city\b/ig, '').trim()}`, 'i') };
+            let woredaQuery = { ...query };
+            if (branchScope.isBranch && branchScope.subcityName) {
+                const branchSubcityRegex = new RegExp(`^${branchScope.subcityName.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}$`, 'i');
+                woredaQuery['location.subcity'] = branchSubcityRegex;
+            } else if (subcity) {
+                woredaQuery['location.subcity'] = { $regex: new RegExp(`^${subcity.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}`, 'i') };
+            }
             if (woreda) woredaQuery['location.woreda'] = { $regex: buildFlexRegex(woreda, 'woreda') };
             if (status) woredaQuery.status = status;
 
@@ -719,6 +731,13 @@ export const getWoredaProfileById = async (req, res) => {
 export const createWoredaProfile = async (req, res) => {
     try {
         const { location } = req.body;
+
+        // Branch permission check
+        const permCheck = await checkBranchPermission(req.user, location?.subcity);
+        if (!permCheck.allowed) {
+            return res.status(403).json({ message: permCheck.message });
+        }
+
         const matchCriteria = {
             'location.subcity': location.subcity,
             'location.woreda': location.woreda,
@@ -760,6 +779,13 @@ export const updateWoredaProfile = async (req, res) => {
     try {
         const profile = await WoredaProfile.findById(req.params.id);
         if (!profile) return res.status(404).json({ message: 'Woreda Profile not found' });
+
+        // Branch permission check
+        const permCheck = await checkBranchPermission(req.user, profile.location?.subcity);
+        if (!permCheck.allowed) {
+            return res.status(403).json({ message: permCheck.message });
+        }
+
         const before = profile.toObject();
         Object.assign(profile, req.body);
         if (profile.aggregation_level === 'woreda') {
@@ -783,6 +809,13 @@ export const deleteWoredaProfile = async (req, res) => {
     try {
         const profile = await WoredaProfile.findById(req.params.id);
         if (!profile) return res.status(404).json({ message: 'Woreda Profile not found' });
+
+        // Branch permission check
+        const permCheck = await checkBranchPermission(req.user, profile.location?.subcity);
+        if (!permCheck.allowed) {
+            return res.status(403).json({ message: permCheck.message });
+        }
+
         const before = profile.toObject();
         await WoredaProfile.findByIdAndDelete(req.params.id);
         await auditService.logAction({

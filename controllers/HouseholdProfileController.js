@@ -1,11 +1,20 @@
 import HouseholdProfile from '../models/HouseholdProfile.js';
 import WoredaProfile from '../models/WoredaProfile.js';
+import { getBranchScope, checkBranchPermission } from '../utils/branchScope.js';
 
 export const getHouseholdProfiles = async (req, res) => {
     try {
         const { subcity, woreda, block, house_no } = req.query;
-        const query = {};
-        if (subcity) query['location.subcity'] = new RegExp(`^${subcity}$`, 'i');
+        // Start from dataScope if provided by the route middleware
+        const query = { ...(req.dataScope || {}) };
+
+        const branchScope = await getBranchScope(req.user);
+        if (branchScope.isBranch && branchScope.subcityName) {
+            query['location.subcity'] = new RegExp(`^${branchScope.subcityName.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}$`, 'i');
+        } else if (subcity) {
+            query['location.subcity'] = new RegExp(`^${subcity.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}$`, 'i');
+        }
+
         if (woreda) query['location.woreda'] = new RegExp(`^${woreda}$`, 'i');
         if (block) query['location.block'] = new RegExp(`^${block}$`, 'i');
         if (house_no) query['location.house_no'] = new RegExp(`^${house_no}$`, 'i');
@@ -98,6 +107,13 @@ export const createHouseholdProfile = async (req, res) => {
         const { allowUpdateIfDuplicate, ...bodyData } = req.body;
         const houseNo = bodyData.location?.house_no || bodyData.identity_location?.house_no;
         const woreda = bodyData.location?.woreda || bodyData.identity_location?.woreda;
+        const targetSubcity = bodyData.location?.subcity || bodyData.identity_location?.subcity;
+
+        // Branch permission check — branch users can only create within their subcity
+        const permCheck = await checkBranchPermission(req.user, targetSubcity);
+        if (!permCheck.allowed) {
+            return res.status(403).json({ message: permCheck.message });
+        }
 
         const isUnnumbered = !houseNo || !houseNo.trim() || ['none', 'n/a', 'no house no', 'no house number', 'unnumbered'].includes(houseNo.trim().toLowerCase());
 
@@ -142,6 +158,17 @@ export const createHouseholdProfile = async (req, res) => {
 
 export const updateHouseholdProfile = async (req, res) => {
     try {
+        // Branch permission check using existing doc's subcity
+        const existingDoc = await HouseholdProfile.findById(req.params.id)
+            || await WoredaProfile.findById(req.params.id);
+        if (existingDoc) {
+            const docSubcity = existingDoc.location?.subcity || existingDoc.identity_location?.subcity;
+            const permCheck = await checkBranchPermission(req.user, docSubcity);
+            if (!permCheck.allowed) {
+                return res.status(403).json({ message: permCheck.message });
+            }
+        }
+
         let profile = await HouseholdProfile.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
         if (!profile) {
             const wp = await WoredaProfile.findById(req.params.id);
@@ -173,6 +200,17 @@ export const updateHouseholdProfile = async (req, res) => {
 
 export const deleteHouseholdProfile = async (req, res) => {
     try {
+        // Branch permission check using existing doc's subcity
+        const existingDoc = await HouseholdProfile.findById(req.params.id)
+            || await WoredaProfile.findById(req.params.id);
+        if (existingDoc) {
+            const docSubcity = existingDoc.location?.subcity || existingDoc.identity_location?.subcity;
+            const permCheck = await checkBranchPermission(req.user, docSubcity);
+            if (!permCheck.allowed) {
+                return res.status(403).json({ message: permCheck.message });
+            }
+        }
+
         let profile = await HouseholdProfile.findByIdAndDelete(req.params.id);
         if (!profile) {
             profile = await WoredaProfile.findByIdAndDelete(req.params.id);

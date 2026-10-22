@@ -2,6 +2,7 @@ import AlertSubscription, { ALERT_CATEGORY_VALUES } from '../models/AlertSubscri
 import * as auditService from '../services/auditService.js';
 import { sendSingleSms, sendBatchSms } from '../services/smppService.js';
 import { sendEmail, sendBroadcastEmail, generateAlertEmailHtml } from '../services/emailService.js';
+import { getBranchScope, buildSubcityRegex } from '../utils/branchScope.js';
 
 const sanitizeIncomingPayload = (payload) => {
   const clean = payload && typeof payload === 'object' ? { ...payload } : {};
@@ -92,13 +93,13 @@ export const upsertAlertSubscriptionPublic = async (req, res) => {
 export const listAlertSubscriptions = async (req, res) => {
   try {
     const { status, search, category, location } = req.query;
-    const query = {};
+    const query = { ...(req.dataScope || {}) };
     if (status && status !== 'all') query.status = status;
     if (category && category !== 'all') {
       query['preferences.categories'] = category;
     }
     if (search) {
-      query.$or = [
+      const searchOr = [
         { 'contact.fullName': { $regex: search, $options: 'i' } },
         { 'contact.email': { $regex: search, $options: 'i' } },
         { 'contact.phone': { $regex: search, $options: 'i' } },
@@ -107,6 +108,12 @@ export const listAlertSubscriptions = async (req, res) => {
         { 'location.subCity': { $regex: search, $options: 'i' } },
         { 'location.woreda': { $regex: search, $options: 'i' } },
       ];
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: searchOr }];
+        delete query.$or;
+      } else {
+        query.$or = searchOr;
+      }
     }
 
     const docs = await AlertSubscription.find(query).sort({ updatedAt: -1 }).lean();
@@ -236,19 +243,41 @@ export const broadcastAlert = async (req, res) => {
       query['preferences.categories'] = alertCategory;
     }
 
+    // Restrict broadcast to branch if user belongs to a branch
+    const branchScope = await getBranchScope(req.user);
+    let effectiveLocationTarget = locationTarget;
+
+    if (branchScope.isBranch && branchScope.subcityName) {
+      effectiveLocationTarget = branchScope.subcityName;
+      const subRegex = buildSubcityRegex(branchScope.subcityName);
+      const branchConditions = [
+        { 'location.subCity': subRegex },
+        { 'location.subcity': subRegex },
+        { 'location.addressLine': subRegex }
+      ];
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: branchConditions }];
+        delete query.$or;
+      } else {
+        query.$or = branchConditions;
+      }
+    }
+
     const subscribers = await AlertSubscription.find(query).lean();
 
     // Filter location if specified
-    const filteredSubscribers = locationTarget === 'all'
+    const filteredSubscribers = effectiveLocationTarget === 'all'
       ? subscribers
       : subscribers.filter((sub) => {
           const locString = [
             sub.location?.subCity,
+            sub.location?.subcity,
             sub.location?.woreda,
             sub.location?.city,
             sub.location?.region,
+            sub.location?.addressLine,
           ].filter(Boolean).join('|').toLowerCase();
-          return locString.includes(locationTarget.toLowerCase());
+          return locString.includes(effectiveLocationTarget.toLowerCase());
         });
 
     const broadcastBatchId = `BC-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;

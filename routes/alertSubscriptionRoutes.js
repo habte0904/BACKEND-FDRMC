@@ -23,8 +23,8 @@ router.post('/', upsertAlertSubscriptionPublic);
 router.post('/broadcast', protect, checkPermission('alertsubscription', 'create'), broadcastAlert);
 
 // Single direct messaging
-router.post('/:id/send-sms', protect, checkPermission('alertsubscription', 'update'), sendSingleSmsToSubscriber);
-router.post('/:id/send-email', protect, checkPermission('alertsubscription', 'update'), sendSingleEmailToSubscriber);
+router.post('/:id/send-sms', protect, checkPermission('alertsubscription', 'update'), checkDocumentAccess(AlertSubscription), sendSingleSmsToSubscriber);
+router.post('/:id/send-email', protect, checkPermission('alertsubscription', 'update'), checkDocumentAccess(AlertSubscription), sendSingleEmailToSubscriber);
 
 // Protected management routes with scoping
 router.get('/', protect, checkPermission('alertsubscription', 'view'), applyScopeFilter(AlertSubscription), listAlertSubscriptions);

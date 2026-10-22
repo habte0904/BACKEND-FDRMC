@@ -2,6 +2,7 @@ import * as userService from '../services/userService.js';
 import * as auditService from '../services/auditService.js';
 import { validateUser, transformUserInput, formatUserResponse } from '../dto/userDTO.js';
 import { sendVerificationEmail, sendAccountSetupEmail } from '../services/emailService.js';
+import bcrypt from 'bcryptjs';
 
 // Create User
 export const createUser = async (req, res) => {
@@ -116,13 +117,31 @@ export const updateUser = async (req, res) => {
         const transformed = transformUserInput(req.body);
         if (req.file) {
             transformed.profileImage = req.file;
+        } else if (req.body.removeProfileImage === 'true' || req.body.removeProfileImage === true) {
+            transformed.profileImage = null;
         }
-        // Validation for update can be partial or stricter depending on needs.
-        // For now allowing partial updates without strict validation of all fields.
 
-        // Get 'before' state for audit logging
+        // Get 'before' state for audit logging & verification
         const beforeUser = await userService.getUserById(req.params.id);
         if (!beforeUser) return res.status(404).json({ message: 'User not found' });
+
+        // Handle password update if supplied
+        if (req.body.newPassword) {
+            const newPass = String(req.body.newPassword).trim();
+            if (newPass.length < 6) {
+                return res.status(400).json({ message: 'New password must be at least 6 characters long.' });
+            }
+            if (req.body.currentPassword) {
+                if (!beforeUser.passwordHash) {
+                    return res.status(400).json({ message: 'Account does not have a local password set.' });
+                }
+                const isMatch = await bcrypt.compare(req.body.currentPassword, beforeUser.passwordHash);
+                if (!isMatch) {
+                    return res.status(400).json({ message: 'Current password is incorrect.' });
+                }
+            }
+            transformed.password = newPass;
+        }
 
         // Access Control: Branch Admin restrictions on update
         const isBranchAdmin = req.user.accessLevel === 'branch_admin' ||
@@ -130,6 +149,25 @@ export const updateUser = async (req, res) => {
 
         const isSuperAdmin = req.user.accessLevel === 'super_admin' ||
             (req.user.roles && req.user.roles.some(r => ['Super Admin', 'super_admin', 'superadmin'].includes(r.name)));
+
+        // If the user is self-updating their profile and not a Super Admin,
+        // strictly prevent modifying subcity, woreda/kebele, roles, and organization
+        // so that data-scope permissions are never compromised.
+        const isSelfUpdate = req.user && req.params.id && (
+            req.user._id?.toString() === req.params.id.toString() ||
+            req.user.id?.toString() === req.params.id.toString()
+        );
+        if (isSelfUpdate && !isSuperAdmin) {
+            delete transformed.subcity;
+            delete transformed.kebele;
+            delete transformed.roles;
+            delete transformed.organization;
+            delete transformed.organizationType;
+            delete transformed.accessLevel;
+            delete transformed.department;
+            delete transformed.sector;
+            delete transformed.team;
+        }
 
         if (isBranchAdmin && !isSuperAdmin) {
             const userOrgId = req.user.organization?._id || req.user.organization;

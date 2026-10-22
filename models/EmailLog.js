@@ -15,7 +15,9 @@ const EmailLogSchema = new mongoose.Schema({
     retryCount: { type: Number, default: 0 },
     type: { type: String, enum: ['Verification', 'Welcome', 'PasswordReset', 'AccountSetup', 'Alert', 'Notification', 'Manual', 'Other'], default: 'Other' },
     folder: { type: String, enum: ['inbox', 'sent', 'draft', 'trash'], default: 'sent' },
-    openedAt: { type: Date }
+    openedAt: { type: Date },
+    sentBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', default: null },
 }, { timestamps: true });
 
 EmailLogSchema.index({ recipient: 1, createdAt: -1 });

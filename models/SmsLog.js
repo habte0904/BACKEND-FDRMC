@@ -61,6 +61,32 @@ const SmsLogSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    retryCount: {
+      type: Number,
+      default: 0,
+    },
+    lastResentAt: {
+      type: Date,
+      default: null,
+    },
+    encoding: {
+      type: String,
+      enum: ['GSM-7', 'UCS-2', 'ASCII'],
+      default: 'GSM-7',
+    },
+    segments: {
+      type: Number,
+      default: 1,
+    },
+    latencyMs: {
+      type: Number,
+      default: 0,
+    },
+    organizationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Organization',
+      default: null,
+    },
   },
   { timestamps: true }
 );

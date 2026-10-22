@@ -43,15 +43,18 @@ export const transformUserInput = (data) => {
     if (data.role && !data.roles) {
         transformed.roles = [data.role];
         delete transformed.role;
-    } else if (data.roles && !Array.isArray(data.roles)) {
-        // Ensure roles is always an array
-        transformed.roles = [data.roles];
+    } else if (data.roles !== undefined) {
+        if (Array.isArray(data.roles)) {
+            transformed.roles = data.roles.filter(r => r && r !== '');
+        } else if (typeof data.roles === 'string') {
+            transformed.roles = data.roles.trim() ? [data.roles.trim()] : [];
+        }
     }
 
-    // Sanitize ObjectId fields to prevent CastErrors
+    // Sanitize ObjectId fields to prevent CastErrors - set empty strings to null so unassigning works
     ['organization', 'sector', 'department', 'team'].forEach(field => {
         if (transformed[field] === '' || transformed[field] === 'null' || transformed[field] === 'undefined') {
-            delete transformed[field];
+            transformed[field] = null;
         }
     });
 
@@ -74,9 +77,12 @@ export const formatUserResponse = (user, permissions = []) => {
         sector: user.sector ? { id: user.sector._id, name: user.sector.name } : null,
         department: formatDepartmentResponse(user.department),
         team: user.team ? { id: user.team._id, name: user.team.name } : null,
+        subcity: user.subcity || null,
+        kebele: user.kebele || null,
+        authProvider: user.authProvider || 'local',
         permissions: permissions,
         lastLogin: user.lastLogin,
-        profileImage: user.profileImage ? `http://localhost:5000/${user.profileImage}` : null,
+        profileImage: user.profileImage ? (user.profileImage.startsWith('http') ? user.profileImage : `http://localhost:5000/${user.profileImage}`) : null,
         createdAt: user.createdAt
     };
 };

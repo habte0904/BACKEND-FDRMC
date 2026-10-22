@@ -16,6 +16,19 @@ import User from '../models/User.js';
 // User routes
 const router = express.Router();
 
+// Helper: allow if user is viewing or modifying their own profile, or if they have permission
+const allowSelfOrPermission = (resource, action) => {
+    const permMiddleware = checkPermission(resource, action);
+    return (req, res, next) => {
+        const targetId = req.params.id;
+        const currentUserId = req.user?._id?.toString() || req.user?.id?.toString();
+        if (currentUserId && targetId && currentUserId === targetId.toString()) {
+            return next();
+        }
+        return permMiddleware(req, res, next);
+    };
+};
+
 router.post('/',
     protect,
     checkPermission('user', 'create'),
@@ -32,17 +45,17 @@ router.get('/',
 
 router.get('/:id',
     protect,
-    checkPermission('user', 'view'),
+    allowSelfOrPermission('user', 'view'),
     canAccessUser,
     getUserById
 );
 
 router.put('/:id',
     protect,
-    checkPermission('user', 'update'),
+    upload.single('profileImage'),
+    allowSelfOrPermission('user', 'update'),
     canAccessUser,
     canModifyUser,
-    upload.single('profileImage'),
     updateUser
 );
 

@@ -2,6 +2,7 @@ import User from '../models/User.js';
 import Organization from '../models/Organization.js';
 import Department from '../models/Department.js';
 import Team from '../models/Team.js';
+import { getBranchScope, buildSubcityRegex } from '../utils/branchScope.js';
 
 /**
  * Middleware to apply data scope filtering based on user's hierarchy level
@@ -27,6 +28,117 @@ export const applyScopeFilter = (Model) => {
                                  (user.accessLevel === 'manager' && user.organizationType === 'head_office');
 
             if (!isSuperAdmin) {
+                // Check if user is a branch user assigned to a territorial branch (subcity branch)
+                const branchScope = await getBranchScope(user);
+
+                if (branchScope.isBranch && branchScope.subcityName) {
+                    const subRegex = buildSubcityRegex(branchScope.subcityName);
+                    const userOrgId = user.organization?._id || user.organization || branchScope.organizationId;
+                    const branchUserIds = [];
+
+                    if (userOrgId) {
+                        const branchUsers = await User.find({ organization: userOrgId }).select('_id');
+                        branchUsers.forEach(u => branchUserIds.push(u._id));
+                    }
+
+                    const modelName = Model?.modelName;
+
+                    if (['WoredaProfile', 'HouseholdProfile', 'WoredaAssessment'].includes(modelName)) {
+                        req.dataScope = {
+                            $or: [
+                                { 'location.subcity': subRegex },
+                                { 'location.subCity': subRegex }
+                            ]
+                        };
+                        req.scopedUser = user;
+                        return next();
+                    }
+
+                    if (modelName === 'IncidentReport') {
+                        req.dataScope = {
+                            $or: [
+                                { 'location.subcity': subRegex },
+                                { 'location.subCity': subRegex },
+                                {
+                                    $and: [
+                                        { $or: [{ 'location.subCity': { $in: [null, ''] } }, { 'location.subCity': { $exists: false } }] },
+                                        { $or: [{ 'location.subcity': { $in: [null, ''] } }, { 'location.subcity': { $exists: false } }] },
+                                        { 'location.addressLine': subRegex }
+                                    ]
+                                },
+                                ...(branchUserIds.length > 0 ? [{ createdByUser: { $in: branchUserIds } }] : [])
+                            ]
+                        };
+                        req.scopedUser = user;
+                        return next();
+                    }
+
+                    if (modelName === 'AlertSubscription') {
+                        req.dataScope = {
+                            $or: [
+                                { 'location.subcity': subRegex },
+                                { 'location.subCity': subRegex },
+                                {
+                                    $and: [
+                                        { $or: [{ 'location.subCity': { $in: [null, ''] } }, { 'location.subCity': { $exists: false } }] },
+                                        { $or: [{ 'location.subcity': { $in: [null, ''] } }, { 'location.subcity': { $exists: false } }] },
+                                        { 'location.addressLine': subRegex }
+                                    ]
+                                },
+                                ...(branchUserIds.length > 0 ? [{ createdByUser: { $in: branchUserIds } }] : [])
+                            ]
+                        };
+                        req.scopedUser = user;
+                        return next();
+                    }
+
+                    if (modelName === 'EmergencyContact') {
+                        req.dataScope = {
+                            $or: [
+                                { subcity: subRegex },
+                                { addressLine: subRegex },
+                                { regions: { $in: [subRegex] } },
+                                ...(userOrgId ? [{ organizationId: userOrgId }] : []),
+                                ...(branchUserIds.length > 0 ? [{ createdByUser: { $in: branchUserIds } }] : [])
+                            ]
+                        };
+                        req.scopedUser = user;
+                        return next();
+                    }
+
+                    if (modelName === 'InspectionRequest') {
+                        req.dataScope = {
+                            $or: [
+                                { subcity: subRegex },
+                                { propertyAddress: subRegex },
+                                ...(userOrgId ? [{ organizationId: userOrgId }] : [])
+                            ]
+                        };
+                        req.scopedUser = user;
+                        return next();
+                    }
+
+                    // Generic territorial fallback
+                    if (Boolean(Model?.schema?.path('location.subcity') || Model?.schema?.path('location.subCity') || Model?.schema?.path('location'))) {
+                        req.dataScope = {
+                            $or: [
+                                { 'location.subcity': subRegex },
+                                { 'location.subCity': subRegex }
+                            ]
+                        };
+                        req.scopedUser = user;
+                        return next();
+                    }
+                }
+
+                // If user is Head Office (not a branch), they can see all city-wide data for territorial/admin collections
+                const headOfficeTerritorialModels = ['WoredaProfile', 'HouseholdProfile', 'WoredaAssessment', 'IncidentReport', 'AlertSubscription', 'EmergencyContact', 'InspectionRequest'];
+                if (headOfficeTerritorialModels.includes(Model?.modelName) && !branchScope.isBranch) {
+                    req.dataScope = {};
+                    req.scopedUser = user;
+                    return next();
+                }
+
                 const userOrgId = user.organization?._id || user.organization;
                 const branchUserIds = [];
 
@@ -35,29 +147,56 @@ export const applyScopeFilter = (Model) => {
                     branchUsers.forEach(u => branchUserIds.push(u._id));
                 }
 
+                // Resolve branch subcity name if organization is linked to a subcity
+                let branchSubcityName = null;
+                if (user.organization) {
+                    if (user.organization.subcityName) {
+                        branchSubcityName = user.organization.subcityName;
+                    } else if (user.organization.subcity) {
+                        const Subcity = (await import('../models/Subcity.js')).default;
+                        const subDoc = await Subcity.findById(user.organization.subcity);
+                        if (subDoc) branchSubcityName = subDoc.name;
+                    }
+                }
+
                 // If Model is passed, inspect schema paths for scoping
                 if (Model && Model.schema) {
                     const paths = Model.schema.paths;
                     const conditions = [];
 
-                    // 1. Organization boundary
-                    if (paths.organizationId && userOrgId) {
-                        conditions.push({ organizationId: userOrgId });
-                    } else if (paths.organization && userOrgId) {
-                        conditions.push({ organization: userOrgId });
-                    }
+                    // Special case for Organization model itself
+                    if (Model.modelName === 'Organization') {
+                        if (userOrgId) conditions.push({ _id: userOrgId });
+                        conditions.push({ type: 'head_office' });
+                    } else {
+                        // 1. Organization boundary
+                        if (paths.organizationId && userOrgId) {
+                            conditions.push({ organizationId: userOrgId });
+                        } else if (paths.organization && userOrgId) {
+                            conditions.push({ organization: userOrgId });
+                        }
 
-                    // 2. Creator boundaries (experts only see their own, managers/admins see branch)
-                    if (user.accessLevel === 'expert') {
-                        if (paths.createdBy) conditions.push({ createdBy: user._id });
-                        if (paths.createdByUser) conditions.push({ createdByUser: user._id });
-                        if (paths.submittedBy) conditions.push({ submittedBy: user._id });
-                        if (paths.assessed_by) conditions.push({ assessed_by: user._id });
-                    } else if (branchUserIds.length > 0) {
-                        if (paths.createdBy) conditions.push({ createdBy: { $in: branchUserIds } });
-                        if (paths.createdByUser) conditions.push({ createdByUser: { $in: branchUserIds } });
-                        if (paths.submittedBy) conditions.push({ submittedBy: { $in: branchUserIds } });
-                        if (paths.assessed_by) conditions.push({ assessed_by: { $in: branchUserIds } });
+                        // 2. Territorial boundary (Subcity & Woredas matching this branch)
+                        if (branchSubcityName) {
+                            const subRegex = new RegExp(`^${branchSubcityName.replace(/\\bsub[\\s-]?city\\b/ig, '').trim()}$`, 'i');
+                            if (Model.schema.path('location.subcity') || paths['location.subcity']) conditions.push({ 'location.subcity': subRegex });
+                            if (Model.schema.path('location.subCity') || paths['location.subCity']) conditions.push({ 'location.subCity': subRegex });
+                            if (Model.schema.path('subCity') || paths.subCity) conditions.push({ subCity: subRegex });
+                            if (Model.schema.path('subcity') || paths.subcity) conditions.push({ subcity: subRegex });
+                        }
+
+                        // 3. Creator boundaries (experts only see their own, managers/admins see branch)
+                        if (user.accessLevel === 'expert') {
+                            if (paths.createdBy) conditions.push({ createdBy: user._id });
+                            if (paths.createdByUser) conditions.push({ createdByUser: user._id });
+                            if (paths.submittedBy) conditions.push({ submittedBy: user._id });
+                            if (paths.assessed_by) conditions.push({ assessed_by: user._id });
+                        } else if (branchUserIds.length > 0) {
+                            if (paths.createdBy) conditions.push({ createdBy: { $in: branchUserIds } });
+                            if (paths.createdByUser) conditions.push({ createdByUser: { $in: branchUserIds } });
+                            if (paths.submittedBy) conditions.push({ submittedBy: { $in: branchUserIds } });
+                            if (paths.assessed_by) conditions.push({ assessed_by: { $in: branchUserIds } });
+                        }
                     }
 
                     if (conditions.length > 0) {
@@ -128,7 +267,7 @@ export const checkDocumentAccess = (Model, idParamName = 'id') => {
  */
 export const canModifyUser = async (req, res, next) => {
     try {
-        const targetUserId = req.params.id || req.params.userId;
+        const targetUserId = req.params.id || req.params.userId || req.body?.userId;
         if (!targetUserId) {
             return res.status(400).json({ message: 'User ID is required' });
         }
@@ -139,7 +278,7 @@ export const canModifyUser = async (req, res, next) => {
 
         // Super admin can modify any user
         const isSuperAdmin = req.user.accessLevel === 'super_admin' ||
-            (req.user.roles && req.user.roles.some(r => ['superadmin', 'super admin', 'super_admin'].includes(r.name.toLowerCase())));
+            (req.user.roles && req.user.roles.some(r => ['superadmin', 'super admin', 'super_admin'].includes((r.name || r).toString().toLowerCase())));
         
         if (isSuperAdmin) {
             return next();
@@ -157,10 +296,11 @@ export const canModifyUser = async (req, res, next) => {
             branch_admin: 75,
             directorate: 60,
             team_leader: 40,
-            expert: 20
+            expert: 20,
+            public: 0
         };
 
-        const getHierarchyValue = (level) => HIERARCHY_LEVELS[level] || 0;
+        const getHierarchyValue = (level) => HIERARCHY_LEVELS[level] ?? 0;
 
         const currentUserLevel = getHierarchyValue(req.user.accessLevel);
         const targetUserLevel = getHierarchyValue(targetUser.accessLevel);
@@ -184,13 +324,14 @@ export const canAccessUser = async (req, res, next) => {
     try {
         const currentUser = await User.findById(req.user._id)
             .populate('organization')
+            .populate('roles')
             .populate('sector')
             .populate('department')
             .populate('team')
             .populate('managedDepartments')
             .populate('managedTeams');
 
-        const targetUserId = req.params.userId || req.body.userId || req.params.id;
+        const targetUserId = req.params.id || req.params.userId || req.body?.userId;
 
         if (!targetUserId) {
             return res.status(400).json({ message: 'Target user ID required' });
@@ -198,6 +339,7 @@ export const canAccessUser = async (req, res, next) => {
 
         const targetUser = await User.findById(targetUserId)
             .populate('organization')
+            .populate('roles')
             .populate('sector')
             .populate('department')
             .populate('team');
@@ -206,8 +348,18 @@ export const canAccessUser = async (req, res, next) => {
             return res.status(404).json({ message: 'Target user not found' });
         }
 
+        // Users can always access their own account
+        if (currentUser._id.equals(targetUser._id)) {
+            req.targetUser = targetUser;
+            return next();
+        }
+
         // Super admin can access anyone
-        if (currentUser.accessLevel === 'super_admin') {
+        const isSuperAdmin = currentUser.accessLevel === 'super_admin' ||
+            (req.user.roles && req.user.roles.some(r => ['superadmin', 'super admin', 'super_admin'].includes((r.name || r).toString().toLowerCase()))) ||
+            (currentUser.roles && currentUser.roles.some(r => ['superadmin', 'super admin', 'super_admin'].includes((r.name || r).toString().toLowerCase())));
+
+        if (isSuperAdmin) {
             req.targetUser = targetUser;
             return next();
         }

@@ -1,5 +1,7 @@
 import Template from '../models/Template.js';
 import FormResponse from '../models/FormResponse.js';
+import User from '../models/User.js';
+import { getBranchScope } from '../utils/branchScope.js';
 import * as auditService from '../services/auditService.js';
 
 // @desc    Get all templates
@@ -31,7 +33,60 @@ export const getTemplates = async (req, res) => {
             query.name = { $regex: search, $options: 'i' };
         }
 
-        const templates = await Template.find(query).sort({ updatedAt: -1 }).populate('createdBy', 'fullname');
+        let templates = await Template.find(query).sort({ updatedAt: -1 }).populate('createdBy', 'fullname').lean();
+
+        // If branch user, scope the usageCount to their branch responses
+        if (req.user) {
+            const branchScope = await getBranchScope(req.user);
+            if (branchScope.isBranch) {
+                const branchConditions = [];
+                if (branchScope.organizationId) {
+                    const branchUsers = await User.find({ organization: branchScope.organizationId }, '_id').lean();
+                    const branchUserIds = branchUsers.map(u => u._id);
+                    if (branchUserIds.length > 0) {
+                        branchConditions.push({ submittedBy: { $in: branchUserIds } });
+                        branchConditions.push({ 'respondentMetadata.enumeratorId': { $in: branchUserIds } });
+                    }
+                }
+                if (req.user._id) {
+                    branchConditions.push({ submittedBy: req.user._id });
+                }
+                if (branchScope.subcityName) {
+                    const subRegex = new RegExp(`^${branchScope.subcityName.trim()}$`, 'i');
+                    const subcityCodes = ['subcity', 'sub_city', 'subCity', 'q903', 'q196', 'q453'];
+                    subcityCodes.forEach(code => {
+                        branchConditions.push({ [`answers.${code}.value`]: subRegex });
+                        branchConditions.push({ [`answers.${code}`]: subRegex });
+                    });
+                }
+
+                if (branchConditions.length > 0) {
+                    const templateIds = templates.map(t => t._id);
+                    const counts = await FormResponse.aggregate([
+                        {
+                            $match: {
+                                templateId: { $in: templateIds },
+                                $or: branchConditions
+                            }
+                        },
+                        {
+                            $group: {
+                                _id: '$templateId',
+                                count: { $sum: 1 }
+                            }
+                        }
+                    ]);
+                    const countMap = new Map(counts.map(c => [c._id.toString(), c.count]));
+                    templates = templates.map(t => ({
+                        ...t,
+                        usageCount: countMap.get(t._id.toString()) || 0
+                    }));
+                } else {
+                    templates = templates.map(t => ({ ...t, usageCount: 0 }));
+                }
+            }
+        }
+
         res.json(templates);
     } catch (error) {
         res.status(500).json({ message: error.message });

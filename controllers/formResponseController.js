@@ -1,5 +1,7 @@
 import FormResponse from '../models/FormResponse.js';
 import Template from '../models/Template.js';
+import User from '../models/User.js';
+import { getBranchScope } from '../utils/branchScope.js';
 import * as auditService from '../services/auditService.js';
 
 // @desc    Submit a new form response
@@ -77,6 +79,49 @@ export const submitResponse = async (req, res) => {
     }
 };
 
+// Helper to build branch scope filter for FormResponse
+const buildFormResponseBranchFilter = async (user) => {
+    const branchScope = await getBranchScope(user);
+    if (!branchScope.isBranch) {
+        return null;
+    }
+
+    const branchConditions = [];
+
+    // 1. Responses submitted by or enumerated by users belonging to this branch
+    if (branchScope.organizationId) {
+        const branchUsers = await User.find(
+            { organization: branchScope.organizationId },
+            '_id'
+        ).lean();
+        const branchUserIds = branchUsers.map(u => u._id);
+        if (branchUserIds.length > 0) {
+            branchConditions.push({ submittedBy: { $in: branchUserIds } });
+            branchConditions.push({ 'respondentMetadata.enumeratorId': { $in: branchUserIds } });
+        }
+    }
+
+    if (user?._id) {
+        branchConditions.push({ submittedBy: user._id });
+        branchConditions.push({ 'respondentMetadata.enumeratorId': user._id });
+    }
+
+    // 2. Responses whose answers match this branch's subcity
+    if (branchScope.subcityName) {
+        const subRegex = new RegExp(`^${branchScope.subcityName.trim()}$`, 'i');
+        const subcityCodes = ['subcity', 'sub_city', 'subCity', 'q903', 'q196', 'q453'];
+        subcityCodes.forEach(code => {
+            branchConditions.push({ [`answers.${code}.value`]: subRegex });
+            branchConditions.push({ [`answers.${code}`]: subRegex });
+        });
+    }
+
+    if (branchConditions.length > 0) {
+        return { $or: branchConditions };
+    }
+    return { _id: null };
+};
+
 // @desc    Get responses for a specific template or context
 // @route   GET /api/responses
 export const getResponses = async (req, res) => {
@@ -88,6 +133,16 @@ export const getResponses = async (req, res) => {
         if (moduleContextId) query.moduleContextId = moduleContextId;
         if (moduleContextType) query.moduleContextType = moduleContextType;
         if (typeof isDraft !== 'undefined') query.isDraft = isDraft === 'true';
+
+        // Apply Branch User Scoping
+        const branchFilter = await buildFormResponseBranchFilter(req.user);
+        if (branchFilter) {
+            if (Object.keys(query).length > 0) {
+                query = { $and: [query, branchFilter] };
+            } else {
+                query = branchFilter;
+            }
+        }
 
         const responses = await FormResponse.find(query)
             .sort({ createdAt: -1 })
@@ -111,6 +166,16 @@ export const getResponseById = async (req, res) => {
         if (!response) {
             return res.status(404).json({ message: 'Response not found' });
         }
+
+        // Branch access verification
+        const branchFilter = await buildFormResponseBranchFilter(req.user);
+        if (branchFilter) {
+            const isAuthorized = await FormResponse.findOne({ _id: response._id, ...branchFilter });
+            if (!isAuthorized) {
+                return res.status(403).json({ message: 'Access denied: Response belongs to another branch jurisdiction.' });
+            }
+        }
+
         res.json(response);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -124,6 +189,15 @@ export const updateResponse = async (req, res) => {
         const response = await FormResponse.findById(req.params.id);
         if (!response) {
             return res.status(404).json({ message: 'Response not found' });
+        }
+
+        // Branch access verification
+        const branchFilter = await buildFormResponseBranchFilter(req.user);
+        if (branchFilter) {
+            const isAuthorized = await FormResponse.findOne({ _id: response._id, ...branchFilter });
+            if (!isAuthorized) {
+                return res.status(403).json({ message: 'Access denied: Cannot update response outside your branch jurisdiction.' });
+            }
         }
 
         if (!response.isDraft && req.body.isDraft === false) {
@@ -184,11 +258,17 @@ export const exportToCSV = async (req, res) => {
         const { templateId } = req.params;
         const { Parser } = await import('json2csv');
 
-        const responses = await FormResponse.find({ templateId, isDraft: false });
+        let query = { templateId, isDraft: false };
+        const branchFilter = await buildFormResponseBranchFilter(req.user);
+        if (branchFilter) {
+            query = { $and: [query, branchFilter] };
+        }
+
+        const responses = await FormResponse.find(query);
         const template = await Template.findById(templateId);
 
         if (!responses.length) {
-            return res.status(404).json({ message: 'No responses found for this template' });
+            return res.status(404).json({ message: 'No responses found for this template in your branch' });
         }
 
         // Flatten answers for CSV
@@ -241,6 +321,15 @@ export const deleteResponse = async (req, res) => {
         const response = await FormResponse.findById(req.params.id);
         if (!response) {
             return res.status(404).json({ message: 'Response not found' });
+        }
+
+        // Branch access verification
+        const branchFilter = await buildFormResponseBranchFilter(req.user);
+        if (branchFilter) {
+            const isAuthorized = await FormResponse.findOne({ _id: response._id, ...branchFilter });
+            if (!isAuthorized) {
+                return res.status(403).json({ message: 'Access denied: Cannot delete response outside your branch jurisdiction.' });
+            }
         }
 
         const before = response.toObject();

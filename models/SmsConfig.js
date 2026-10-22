@@ -2,33 +2,31 @@ import mongoose from 'mongoose';
 
 const SmsConfigSchema = new mongoose.Schema(
   {
-    systemId: {
-      type: String,
-      required: true,
-      trim: true,
-      default: '6524',
+    // NOTE: systemId and password are loaded from .env (SMPP_SYSTEM_ID / SMPP_PASSWORD).
+    // They are intentionally NOT stored in MongoDB for security reasons.
+
+    // ── Stored encrypted (AES-256-GCM via utils/fieldEncryption.js) ──────────────
+    // protocol, systemType, sourceAddr are encrypted at rest
+    isEncrypted: {
+      type: Boolean,
+      default: false, // true once the record has been saved with encryption enabled
     },
-    password: {
-      type: String,
-      required: true,
-      trim: true,
-      default: 'Aacai$73',
-    },
+    // ── Admin-configurable (host/port encrypted like other string fields) ──
     host: {
       type: String,
-      required: true,
       trim: true,
-      default: '10.204.181.70',
+      default: null, // stored encrypted; falls back to process.env.SMPP_HOST if null
     },
     port: {
-      type: Number,
-      required: true,
-      default: 5019,
+      type: mongoose.Schema.Types.Mixed, // Mixed: holds ciphertext (String) when encrypted
+      default: null, // stored encrypted; falls back to process.env.SMPP_PORT if null
     },
     protocol: {
       type: String,
-      enum: ['SMPP3.4', 'SMPP5.0', 'HTTP'],
-      default: 'SMPP3.4',
+      // No enum here — the stored value is AES-256-GCM ciphertext (encrypted before saving).
+      // Plain-text validation ('SMPP3.4' | 'SMPP5.0' | 'HTTP') is done in the controller
+      // before encryption, so Mongoose never sees the raw value.
+      default: null,
     },
     systemType: {
       type: String,
@@ -67,6 +65,53 @@ const SmsConfigSchema = new mongoose.Schema(
     reconnectIntervalMs: {
       type: Number,
       default: 10000,
+    },
+    // ── HTTP / REST API Gateway Configuration ──
+    httpEndpoint: {
+      type: String,
+      trim: true,
+      default: null, // stored encrypted; e.g. https://api.ethiotelecom.et/v1/sms/send
+    },
+    httpMethod: {
+      type: String,
+      enum: ['POST', 'GET'],
+      default: 'POST',
+    },
+    httpAuthType: {
+      type: String,
+      enum: ['bearer', 'api_key', 'basic', 'none'],
+      default: 'bearer',
+    },
+    httpApiKey: {
+      type: String,
+      default: null, // stored encrypted
+    },
+    httpHeaders: {
+      type: String,
+      default: null, // stored encrypted (JSON string of custom headers)
+    },
+    httpPayloadTemplate: {
+      type: String,
+      default: null, // stored encrypted (custom template e.g. {"to":"{{phone}}","text":"{{message}}"})
+    },
+    // ── Throughput, Rate Limiting & Delivery Receipts ──
+    maxTps: {
+      type: Number,
+      default: 20, // Max transactions per second to adhere to telecom limits
+    },
+    dlrEnabled: {
+      type: Boolean,
+      default: true, // Listen for deliver_sm DLR delivery receipts
+    },
+    // ── Phone validation policy ──
+    phoneValidationMode: {
+      type: String,
+      enum: ['ethiopia_only', 'all'],
+      default: 'ethiopia_only', // By default only Ethiopian numbers (+251 / 09 / 07)
+    },
+    allowedOperators: {
+      type: [String],
+      default: ['ethio_telecom', 'safaricom'], // Ethio Telecom (09) & Safaricom (07)
     },
     isActive: {
       type: Boolean,

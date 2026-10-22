@@ -1,6 +1,7 @@
 import EmergencyContact from '../models/EmergencyContact.js';
 import PortalContent from '../models/PortalContent.js';
 import * as auditService from '../services/auditService.js';
+import { getBranchScope } from '../utils/branchScope.js';
 
 const DEFAULT_CONTACTS = [
   {
@@ -164,6 +165,10 @@ export const listEmergencyContacts = async (req, res) => {
     const { search, active, region } = req.query;
     const andConditions = [];
 
+    if (req.dataScope && Object.keys(req.dataScope).length > 0) {
+      andConditions.push(req.dataScope);
+    }
+
     if (active === 'true') andConditions.push({ isActive: true });
     if (active === 'false') andConditions.push({ isActive: false });
 
@@ -219,8 +224,12 @@ export const createEmergencyContact = async (req, res) => {
       return res.status(400).json({ message: 'Phone number is required' });
     }
 
+    const branchScope = await getBranchScope(req.user);
+
     const doc = await EmergencyContact.create({
       ...payload,
+      ...(branchScope.isBranch && branchScope.subcityName ? { subcity: branchScope.subcityName } : {}),
+      ...(branchScope.organizationId ? { organizationId: branchScope.organizationId } : {}),
       ...(req.user?._id ? { createdByUser: req.user._id, lastUpdatedByUser: req.user._id } : {}),
     });
 

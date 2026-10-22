@@ -12,6 +12,7 @@ import AuditLog from '../models/AuditLog.js';
 import HouseholdProfile from '../models/HouseholdProfile.js';
 import WoredaAssessment from '../models/WoredaAssessment.js';
 import IncidentReport from '../models/IncidentReport.js';
+import { getBranchScope } from '../utils/branchScope.js';
 
 /**
  * Get dashboard statistics aggregated 100% dynamically from HouseholdProfile, WoredaAssessment, and Admin collections.
@@ -23,9 +24,15 @@ import IncidentReport from '../models/IncidentReport.js';
 export const getDashboardStats = async (user, queryFilters = {}) => {
     const permissions = await getUserDashboardPermissions(user);
     const filter = buildHierarchyFilter(user);
+    const branchScope = await getBranchScope(user);
 
     const stats = {
         permissions,
+        branchScope: branchScope.isBranch ? {
+            isBranch: true,
+            subcity: branchScope.subcityName,
+            branchName: user.organization?.name || `${branchScope.subcityName} Branch`
+        } : { isBranch: false },
         userInfo: {
             accessLevel: user.accessLevel,
             organizationType: user.organizationType,
@@ -46,12 +53,22 @@ export const getDashboardStats = async (user, queryFilters = {}) => {
         const usersInHierarchy = await User.find(filter.user).select('_id');
         const userIds = usersInHierarchy.map(u => u._id);
 
-        baseFilter = {
-            $or: [
-                { createdBy: { $in: userIds } },
-                { assessed_by: { $in: userIds } }
-            ]
-        };
+        if (branchScope.isBranch && branchScope.subcityName) {
+            const branchSubRegex = new RegExp(`^${branchScope.subcityName.trim()}$`, 'i');
+            baseFilter = {
+                $or: [
+                    { 'location.subcity': branchSubRegex },
+                    { 'identity_location.subcity': branchSubRegex }
+                ]
+            };
+        } else {
+            baseFilter = {
+                $or: [
+                    { createdBy: { $in: userIds } },
+                    { assessed_by: { $in: userIds } }
+                ]
+            };
+        }
         formResponseFilter = { submittedBy: { $in: userIds } };
         profileMappingFilter = { createdBy: { $in: userIds } };
         templateFilter = { createdBy: { $in: userIds } };
@@ -144,6 +161,16 @@ export const getDashboardStats = async (user, queryFilters = {}) => {
 
     // Filter incident reports based on active query filters
     let incidentFilter = {};
+
+    // Branch scope enforcement for incident reports (IncidentReport uses location.subCity)
+    if (branchScope.isBranch && branchScope.subcityName) {
+        const branchIncidentRegex = new RegExp(`^${branchScope.subcityName.trim()}$`, 'i');
+        incidentFilter.$or = [
+            { 'location.subCity': branchIncidentRegex },
+            { 'location.subcity': branchIncidentRegex }
+        ];
+    }
+
     if (queryFilters.subcity && queryFilters.subcity !== 'all') {
         incidentFilter['location.subcity'] = new RegExp(queryFilters.subcity.trim(), 'i');
     }
