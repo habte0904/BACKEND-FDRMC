@@ -1,10 +1,30 @@
 import PortalContent from '../models/PortalContent.js';
+import EmergencyContact from '../models/EmergencyContact.js';
 import * as auditService from '../services/auditService.js';
 import WoredaProfile from '../models/WoredaProfile.js';
 
 export const getPortalContent = async (req, res) => {
   try {
     const doc = await PortalContent.findOne({ key: 'default' }).lean();
+
+    // Attach emergency popup contact if enabled
+    if (doc && doc.pages?.emergencyPopup?.enabled) {
+      const ep = doc.pages.emergencyPopup;
+      let contact = null;
+      if (ep.contactId) {
+        try {
+          contact = await EmergencyContact.findById(ep.contactId).lean();
+        } catch (e) {
+          // ignore invalid id format
+        }
+      }
+      if (!contact) {
+        contact = await EmergencyContact.findOne({ isActive: true }).sort({ sortOrder: 1, title: 1 }).lean();
+      }
+      if (contact) {
+        doc.pages.emergencyPopup.contact = contact;
+      }
+    }
     // attach latest WoredaProfile updated timestamp if available
     try {
       const latest = await WoredaProfile.findOne().sort({ updatedAt: -1 }).select('updatedAt').lean();

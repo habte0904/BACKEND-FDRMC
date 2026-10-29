@@ -218,6 +218,12 @@ const PortalContentSchema = new mongoose.Schema(
       emergencyDirectory: {
         warningMessage: { type: String, trim: true, default: '' },
       },
+      emergencyPopup: {
+        enabled:       { type: Boolean, default: false },
+        title:         { type: String, trim: true, default: 'Emergency Number' },
+        message:       { type: String, trim: true, default: '' },
+        contactId:     { type: String, trim: true, default: '' },
+      },
     },
   },
   { timestamps: true }
